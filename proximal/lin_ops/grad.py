@@ -4,6 +4,7 @@ from proximal.utils.utils import Impl
 from proximal.halide.halide import Halide
 from ..utils.cuda_codegen import indent, sub2ind
 
+import scipy.sparse
 
 class grad(LinOp):
     """
@@ -131,6 +132,24 @@ class grad(LinOp):
 
                 outputs[0] += (-fd)
 
+    def sparse_matrix(self):
+        n = int(np.prod(self.shape[:-1]))
+        V = np.zeros((2,self.dims,n), dtype=np.float32)
+        I = np.zeros((2,self.dims,n), dtype=np.float32)
+        J = np.zeros((2,self.dims,n), dtype=np.float32)
+        for j in range(self.dims):
+            notherdims = int(np.prod(self.shape[j+1:-1]))
+            idx = np.indices(list(self.shape[:j]) + [self.shape[j]-1] + list(self.shape[(j+1):-1]))
+            r = np.ravel_multi_index(idx, self.shape[:-1]).flatten()
+            V[0,j,:r.shape[0]] = 1
+            V[1,j,:r.shape[0]] = -1
+            I[0,j,:r.shape[0]] = r*self.dims+j
+            I[1,j,:r.shape[0]] = r*self.dims+j
+            J[1,j,:r.shape[0]] = r
+            J[0,j,:r.shape[0]] = r + notherdims
+
+        return scipy.sparse.coo_matrix((V.flat, (I.flat,J.flat)), shape=(self.dims*n,n), dtype=np.float32)
+
     def forward_cuda_kernel(self, cg, num_tmp_vars, absidx, parent):
         innode = cg.input_nodes(self)[0]
         idxvars = ["idx_%d" % (num_tmp_vars+d) for d in range(self.dims)]
@@ -147,15 +166,15 @@ class grad(LinOp):
 int %(idxvar)s = ((%(selidx)s) == %(d)d) ? min(%(ed)d, (%(cidx)s)+1) : (%(cidx)s);
 """ % locals()
             newidx[d] = idxvar
-        
+
         icode1,ivar1,num_tmp_vars = innode.forward_cuda_kernel(cg, num_tmp_vars, newidx, self)
         icode2,ivar2,num_tmp_vars = innode.forward_cuda_kernel(cg, num_tmp_vars, absidx[:-1], self)
         code += icode1 + icode2
         code += """
 float %(var)s = %(ivar1)s - %(ivar2)s;
-""" % locals()        
+""" % locals()
         return code, var, num_tmp_vars
-    
+
     def adjoint_cuda_kernel(self, cg, num_tmp_vars, absidx, parent):
         innode = cg.output_nodes(self)[0]
         dims = self.dims
@@ -172,12 +191,12 @@ int %(nidx)s;
             cd = self.shape[d]-1
             code += "%(nidx)s = %(cidx)s-1\n;" % locals()
             newidx[d] = nidx
-            
+
             icode1,ivar1,num_tmp_vars = innode.adjoint_cuda_kernel(cg, num_tmp_vars, absidx + [str(d)], self)
             icode2,ivar2,num_tmp_vars = innode.adjoint_cuda_kernel(cg, num_tmp_vars, newidx + [str(d)], self)
             icode1 = indent(icode1, 4)
             icode2 = indent(icode2, 4)
-                           
+
             code += """
 if( %(cidx)s == 0 )
 {
@@ -194,7 +213,7 @@ if( %(cidx)s == 0 )
     %(var)s += %(ivar1)s - %(ivar2)s;
 }
 """ % locals()
-        
+
         code += "%(var)s = -%(var)s;\n" % locals()
         return code, var, num_tmp_vars
 

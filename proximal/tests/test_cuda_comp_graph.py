@@ -9,6 +9,9 @@ from proximal.lin_ops.comp_graph import CompGraph
 from proximal.lin_ops.conv_nofft import conv_nofft
 from proximal.lin_ops.grad import grad
 from proximal.lin_ops.transpose import transpose
+from proximal.lin_ops.reshape import reshape
+from proximal.lin_ops.hstack import hstack
+from proximal.lin_ops.mul_elemwise import mul_elemwise
 from proximal.lin_ops.pxwise_matrixmult import pxwise_matrixmult
 
 from pycuda import gpuarray
@@ -21,7 +24,7 @@ import numpy as np
 
 class TestCudaCompGraphs(BaseTest):
 
-    def _generic_check_adjoint(self, f, inshape, outshape, s, 
+    def _generic_check_adjoint(self, f, inshape, outshape, s,
                                ntests = 50, eps=1e-5, verbose=False,
                                in_out_sample = None):
         """
@@ -32,25 +35,25 @@ class TestCudaCompGraphs(BaseTest):
         if not type(func) is tuple:
             func = (func,)
         G = CompGraph(vstack(func))
-        
+
         nin = functools.reduce(lambda x,y: x*y, inshape, 1)
         nout = functools.reduce(lambda x,y: x*y, outshape, 1)
-        
+
         if not in_out_sample is None:
             # check against the given in/out samples
             x1 = in_out_sample[0] # forward in
             y1s = in_out_sample[1] # forward out
             y2 = in_out_sample[2] # adjoint in
             x2s = in_out_sample[3] # adjoint out
-            
+
             y1a = G.forward_cuda(gpuarray.to_gpu(x1.astype(np.float32)),gpuarray.to_gpu(y1s.astype(np.float32))).get()
             #print(y1s)
             #print(y1a)
             self.assertTrue(np.amax(np.abs(y1a-y1s)) < eps)
-                
+
             x2a = G.adjoint_cuda(gpuarray.to_gpu(y2.astype(np.float32)),gpuarray.to_gpu(x2s.astype(np.float32))).get()
             self.assertTrue(np.amax(np.abs(x2a-x2s)) < eps)
-        
+
         # test with random data that the forward/adjoint operators are consistent
         maxerr = 0.0
         random.seed(0) # make tests reproducable
@@ -59,21 +62,24 @@ class TestCudaCompGraphs(BaseTest):
             y2 = random.rand(nout).astype(np.float32)
             y1 = np.zeros(nout, dtype=np.float32)
             x2 = np.zeros(nin, dtype=np.float32)
-            
+
             if verbose: print("forward: ", end="")
             y1 = G.forward_cuda(gpuarray.to_gpu(x1),gpuarray.to_gpu(y1),printt=verbose).get()
             if verbose: print("adjoint: ", end="")
             x2 = G.adjoint_cuda(gpuarray.to_gpu(y2),gpuarray.to_gpu(x2),printt=verbose).get()
 
-            self.assertTrue(not np.all(y1 == 0) and not np.all(x2 == 0))            
-            
+            self.assertTrue(not np.all(y1 == 0) and not np.all(x2 == 0))
+
             y1o = G.forward(x1,y1.copy())
             x2o = G.adjoint(y2,x2.copy())
-            erro = abs(np.dot(x1.flatten().astype(np.float64), x2o.flatten().astype(np.float64)) - 
+            erro = abs(np.dot(x1.flatten().astype(np.float64), x2o.flatten().astype(np.float64)) -
                        np.dot(y1o.flatten().astype(np.float64), y2.flatten().astype(np.float64)))
-            
-            err = abs(np.dot(x1.flatten().astype(np.float64),x2.flatten().astype(np.float64)) - 
+
+            err = abs(np.dot(x1.flatten().astype(np.float64),x2.flatten().astype(np.float64)) -
                       np.dot(y1.flatten().astype(np.float64),y2.flatten().astype(np.float64)))
+
+            self.assertTrue( np.max(np.abs(y1-y1o)) < eps )
+
             if err > maxerr:
                 maxerr = err
             if verbose and err > eps:
@@ -83,7 +89,7 @@ class TestCudaCompGraphs(BaseTest):
                 print(G.cuda_adjoint_subgraphs.cuda_code)
                 print("x1\n",np.reshape(x1, inshape))
                 print("y1\n",np.reshape(y1, outshape))
-                print("y1o\n",np.reshape(y1o, outshape))            
+                print("y1o\n",np.reshape(y1o, outshape))
                 print("y2\n",np.reshape(y2, outshape))
                 print("x2\n",np.reshape(x2, inshape))
                 print("x2o\n",np.reshape(x2o, inshape))
@@ -92,20 +98,20 @@ class TestCudaCompGraphs(BaseTest):
                 print("max(abs(x2-x2o)): %f" % (np.amax(np.abs(x2-x2o))))
             self.assertTrue(err <= eps)
         if verbose: print("%s passed %d tests. Max adjoint test error: %f" % (s, ntests, maxerr))
-    
+
     def test_scale(self):
         fin = np.arange(100)
         fout = fin*5
         self._generic_check_adjoint(lambda x: x*5, (10,10), (10,10), "scale", in_out_sample = (fin,fout,fin,fout))
-    
+
     def test_sum(self):
         fin = np.arange(100)
         fout = fin*6
         self._generic_check_adjoint(lambda x: x+x*5, (10,10), (10,10), "sum", in_out_sample = (fin,fout,fin,fout))
-        
+
     def test_constant(self):
         self._generic_check_adjoint(lambda x: x-random.rand(10,10), (10,10), (10,10), "constant")
-    
+
     def test_subsample(self):
         fin = np.arange(100)
         fout = np.reshape(fin, (10,10))[::2,::4].flatten()
@@ -113,7 +119,7 @@ class TestCudaCompGraphs(BaseTest):
         aout = np.zeros((10,10))
         aout[::2,::4] = np.reshape(ain, (5,3))
         self._generic_check_adjoint(lambda x: subsample(x, [2,4]), (10,10), (5,3), "subsample", in_out_sample = (fin,fout,ain,aout))
-        
+
     def test_uneven_subsample(self):
         fin = np.arange(100)
         fout = np.reshape(fin, (10,10))[::2,::4].flatten()
@@ -123,20 +129,20 @@ class TestCudaCompGraphs(BaseTest):
         idx = np.indices( (5,3) )
         idx[0] *= 2
         idx[1] *= 4
-        self._generic_check_adjoint(lambda x: uneven_subsample(x, idx), (10,10), (5,3), "uneven_subsample", in_out_sample = (fin,fout,ain,aout))        
-        
+        self._generic_check_adjoint(lambda x: uneven_subsample(x, idx), (10,10), (5,3), "uneven_subsample", in_out_sample = (fin,fout,ain,aout))
+
     def test_uneven_subsample2(self):
         # check out of range indices
         fin = np.arange(9)+1
         idxy = np.array([[0,-1,-2], [1,1,1], [2,3,4]])
         idxx = np.array([[0,1,2], [-1,1,3], [-2,1,4]])
-        
+
         fout = np.array([[1,0, 0], [0, 5, 0], [0, 0, 0]])
-       
+
         ain = fin
         aout = fout
-        self._generic_check_adjoint(lambda x: uneven_subsample(x, [idxy,idxx]), (3,3), (3,3), "uneven_subsample2", in_out_sample = (fin,fout,ain,aout))        
-        
+        self._generic_check_adjoint(lambda x: uneven_subsample(x, [idxy,idxx]), (3,3), (3,3), "uneven_subsample2", in_out_sample = (fin,fout,ain,aout))
+
     def test_grad(self):
         fin = np.arange(100)
         fint = np.reshape(fin, (10,10))
@@ -144,7 +150,7 @@ class TestCudaCompGraphs(BaseTest):
         fout[0:-1,:,0] = fint[1:,:] - fint[:-1,:]
         fout[:,0:-1,1] = fint[:,1:] - fint[:,:-1]
         fout = fout.flatten()
-        
+
         ain = np.arange(200)
         aint = np.reshape(ain, (10,10,2))
         aout = np.zeros((10,10))
@@ -155,64 +161,76 @@ class TestCudaCompGraphs(BaseTest):
         aout[:,0] += aint[:,0,1]
         aout[:,-1] += -aint[:,-2,1]
         aout = -aout.flatten()
-        
+
         self._generic_check_adjoint(lambda x: grad(x), (10,10), (10,10,2), "grad", in_out_sample = (fin,fout, ain,aout))
-        
+
     def test_conv_nofft(self):
         K = np.reshape((np.arange(9)), (3,3))
-        
+
         fin = np.arange(25)
         fout = np.array([[24,45,81,117,144],[99,120,156,192,219],[279,300,336,372,399],[459,480,516,552,579],[624,645,681,717,744]])
-        
+
         ain = fin
         aout = np.array([[0+8+40+88, 23+142,44+175,65+208,46+136+24+66],[105+210,312,348,384,240+111],[180+345,492,528,564,345+156],[255+480,672,708,744,450+201],[130+40+62+232,304+65,319+68,334+71,184+24+0+72]])
-        self._generic_check_adjoint(lambda x: conv_nofft(K,x), (5,5), (5,5), "conv_nofft1", in_out_sample = (fin,fout,ain,aout), eps=1e-4)  
-        
+        self._generic_check_adjoint(lambda x: conv_nofft(K,x), (5,5), (5,5), "conv_nofft1", in_out_sample = (fin,fout,ain,aout), eps=1e-4)
+
         fin2 = np.zeros((5,5,2))
         fin2[:,:,0] = np.reshape(fin, (5,5))
         fin2[:,:,1] = fin2[:,:,0]
         fout2 = np.zeros((5,5,2))
         fout2[:,:,0] = np.reshape(fout, (5,5))
         fout2[:,:,1] = fout2[:,:,0]
-        
+
         ain2 = np.zeros((5,5,2))
         ain2[:,:,0] = np.reshape(ain, (5,5))
         ain2[:,:,1] = ain2[:,:,0]
         aout2 = np.zeros((5,5,2))
         aout2[:,:,0] = np.reshape(aout, (5,5))
         aout2[:,:,1] = aout2[:,:,0]
-        self._generic_check_adjoint(lambda x: conv_nofft(np.reshape(K, K.shape + (1,)),x), (5,5,2), (5,5,2), "conv_nofft2", in_out_sample = (fin2,fout2,ain2,aout2), eps=1e-4)  
-    
+        self._generic_check_adjoint(lambda x: conv_nofft(np.reshape(K, K.shape + (1,)),x), (5,5,2), (5,5,2), "conv_nofft2", in_out_sample = (fin2,fout2,ain2,aout2), eps=1e-4)
+
         K1 = np.array([[1,2,3]])
         K2 = np.array([[5],[3],[1]])
         fin = np.arange(25)
         fout = np.array([[159,186,240,294,339],[399,426,480,534,579],[669,696,750,804,849],[939,966,1020,1074,1119],[1059,1086,1140,1194,1239]])
         ain = fin
         aout = np.array([[55,70,100,130,95],[227,222,276,330,235],[587,492,546,600,415],[947,762,816,870,595],[1919,1514,1592,1670,1135]])
-        self._generic_check_adjoint(lambda x: conv_nofft(K1,conv_nofft(K2, x)), (5,5), (5,5), "conv_nofft3", in_out_sample = (fin,fout,ain,aout), eps=1e-4)      
-    
+        self._generic_check_adjoint(lambda x: conv_nofft(K1,conv_nofft(K2, x)), (5,5), (5,5), "conv_nofft3", in_out_sample = (fin,fout,ain,aout), eps=1e-4)
+
         K = np.abs(random.rand(5,3))
-        self._generic_check_adjoint(lambda x: conv_nofft(K,x), (10,10), (10,10), "conv_nofft4")    
-        
+        self._generic_check_adjoint(lambda x: conv_nofft(K,x), (10,10), (10,10), "conv_nofft4")
+
     def test_vstack(self):
         self._generic_check_adjoint(lambda x: (x, x*5), (10,10), (10*10+10*10,), "vstack")
-        
+
     def test_transpose(self):
         self._generic_check_adjoint(lambda x: transpose(x, [2,0,1]), (4,3,2), (2,4,3), "transpose")
-        
+
+    def test_reshape(self):
+        self._generic_check_adjoint(lambda x: reshape(x, (1000,2,4,3)), (4,3,1000,2), (1000,2,4,3), "reshape")
+
+    def test_hstack(self):
+        self._generic_check_adjoint(lambda x: hstack((x, x*5, x*20)), (200,200), (200*200,3), "hstack", eps=5e-4)
+
+    def test_mulelemwise(self):
+        W = random.rand(10,20)
+        W[0,0] = 0
+        W[1,0] = -1
+        self._generic_check_adjoint(lambda x: mul_elemwise(W, x), (10,20), (10,20), "mul_elemwise")
+
     def test_pxwise_matmul(self):
         A = random.rand(4,4,3,2)
         self._generic_check_adjoint(lambda x: pxwise_matrixmult(A, x), [4,4,2], (4,4,3), "pxwise_matmul")
-        
+
         A = np.reshape(np.arange(2*2*3*2), (2,2,3,2))
         fin = np.arange(2*2*2)
         fout = np.array([[[1,3,5],[33,43,53],[113,131,149],[241,267,293]]])
-        
+
         ain = np.arange(2*2*3)
         aout = np.array([[[10,13],[100,112],[298,319],[604,634]]])
         self._generic_check_adjoint(lambda x: pxwise_matrixmult(A, x), [2,2,2], [2,2,3], "pxwise_matmul2", in_out_sample = (fin,fout,ain,aout))
-        
-        
+
+
     def test_complex_graph(self):
         # easier debugging, start with small dimensions
         x = Variable((5,5))
@@ -227,28 +245,96 @@ class TestCudaCompGraphs(BaseTest):
         e1 = tgx - w
         inshape = (5*5 + 5*5*2,)
         outshape = (3*3 + 5*5*2*2 + 5*5*2,)
-        self._generic_check_adjoint(lambda x: (ed,e1,Ew), inshape, outshape, "complex", eps=5e-4)    
-        
+        self._generic_check_adjoint(lambda x: (ed,e1,Ew), inshape, outshape, "complex", eps=5e-4)
+
         # continue with more values
         K1 = np.abs(random.rand(1,5,1))
         K2 = np.abs(random.rand(5,1,1))
-        
+
         x = Variable((320,240,2))
         cx = conv_nofft(K1,conv_nofft(K2, x))
         scx = subsample(cx, (5,5,1))
         ed = scx - random.rand(64,48,2)
-        
+
         w = Variable(x.shape + (2,))
         gw = grad(w, 2)
         Ew = gw + transpose(gw, (0,1,2,4,3))
         gx = grad(x,2)
         tgx = pxwise_matrixmult(random.rand(320,240,2,2,2), gx)
         e1 = tgx - w
-        
+
         inshape = (320*240*2 + 320*240*2*2,)
         outshape = (64*48*2 + 320*240*2*2*2 + 320*240*2*2,)
         self._generic_check_adjoint(lambda x: (ed,e1,Ew), inshape, outshape, "complex2", eps=5e-4)
-        
+
+    def test_complex_graph2(self):
+        mul = mul_elemwise
+
+        shape_h = (320, 240)
+        shape_l = (32, 24)
+
+        R1_lr = random.rand(*shape_l)
+        R2_lr = random.rand(*shape_l)
+
+        W_rd = random.rand(*shape_l)
+
+        W = np.repeat(np.reshape(np.maximum(random.rand(*shape_h), 0.2), (shape_h[0]*shape_h[1],1)), 3, axis=1)
+        T = random.rand(*(shape_h + (2,2)))
+
+        xhh = random.rand(*shape_h)
+        yhh = random.rand(*shape_h)
+
+        zeta_k = random.rand(*shape_h)
+        amp_k = random.rand(*shape_h)
+
+        zeta = Variable( shape_h )
+        amp = Variable( shape_h )
+
+        zeta.initval = random.rand(*shape_h)
+        amp.initval = random.rand(*shape_h)
+
+        r1_k = random.rand(*shape_h)
+        r2_k = random.rand(*shape_h)
+        d_r1_amp_k = random.rand(*shape_h)
+        d_r2_amp_k = random.rand(*shape_h)
+        d_r1_dist_k = random.rand(*shape_h)
+        d_r2_dist_k = random.rand(*shape_h)
+
+        taylor_r1 = mul( d_r1_dist_k, zeta - zeta_k) + mul( d_r1_amp_k, amp - amp_k) + r1_k
+        taylor_r2 = mul( d_r2_dist_k, zeta - zeta_k) + mul( d_r2_amp_k, amp - amp_k) + r2_k
+
+        filter_h = np.array([[0.2,0.2,0.2,0.2,0.2]])
+        filter_v = filter_h.T
+        px_map_y, px_map_x = np.indices(shape_l)
+        px_map_y = px_map_y * 10 + 4
+        px_map_x = px_map_x * 10 + 4
+
+        ssR1 = uneven_subsample( conv_nofft(filter_h, conv_nofft(filter_v, taylor_r1)), (px_map_y, px_map_x) )
+        resR1 = ssR1 - R1_lr
+        ssR2 = uneven_subsample( conv_nofft(filter_h, conv_nofft(filter_v, taylor_r2)), (px_map_y, px_map_x) )
+        resR2 = ssR2 - R2_lr
+        lin_op1 = vstack([mul(W_rd, resR1),mul(W_rd, resR2)])
+
+        zeta_y = reshape(grad(zeta, 1), (zeta.shape))
+        zeta_x = reshape(transpose(grad(transpose(zeta, (1,0)), 1), (1,0,2)), zeta.shape)
+
+        vnormal = 2*hstack([
+            -3 * zeta_x,
+            -4 * zeta_y,
+            2 * zeta + mul(np.reshape((xhh), zeta_x.shape), zeta_x) +
+                       mul(np.reshape((yhh), zeta_y.shape), zeta_y)])
+
+
+        alpha_d = 5
+        lin_op2 = alpha_d*mul(W,vnormal)
+
+        lin_op3 = 6*pxwise_matrixmult(T, grad(amp))
+
+        inshape = (int(np.prod(shape_h))*2, )
+
+        outshape = (int(np.prod(lin_op1.shape)) + int(np.prod(lin_op2.shape)) + int(np.prod(lin_op3.shape)),)
+        self._generic_check_adjoint(lambda x: (lin_op1, lin_op2, lin_op3), inshape, outshape, "complex3", eps=1e-3)
+
     def test_performance(self):
         c = random.rand(2000,2000)
         x = Variable([2000,2000])
@@ -260,40 +346,40 @@ class TestCudaCompGraphs(BaseTest):
         for i in range(10):
             ytest1 = G.forward(xtest1, ytest1)
         t2_cpu = time.time()
-        
+
         xtest = gpuarray.to_gpu(xtest1.astype(np.float32))
         ytest = gpuarray.to_gpu(ytest1.astype(np.float32))
         t1_gpu = time.time()
         for i in range(10):
             ytest = G.forward_cuda(xtest, ytest)
         t2_gpu = time.time()
-        
+
         t_cpu = t2_cpu - t1_cpu
         t_gpu = t2_gpu - t1_gpu
         logging.info("Forward timing: cpu=%.2f ms gpu=%.2f ms factor=%.3f" % (t_cpu, t_gpu, t_gpu/t_cpu))
         self.assertTrue(t_gpu < t_cpu)
 
-        t1_cpu = time.time()        
+        t1_cpu = time.time()
         for i in range(10):
             xtest1 = G.adjoint(ytest1, xtest1)
         t2_cpu = time.time()
-        
+
         t1_gpu = time.time()
         for i in range(10):
             xtest = G.adjoint_cuda(ytest, xtest)
         t2_gpu = time.time()
-        
+
         t_cpu = t2_cpu - t1_cpu
         t_gpu = t2_gpu - t1_gpu
         logging.info("Adjoint timing: cpu=%.2f ms gpu=%.2f ms factor=%.3f" % (t_cpu, t_gpu, t_gpu/t_cpu))
         self.assertTrue(t_gpu < t_cpu)
 
         #print( G.start.adjoint_cuda(G, 0, "i", None)[0] )
-                
+
 if __name__ == "__main__":
     import logging
     logging.getLogger().setLevel(logging.INFO)
     t = TestCudaCompGraphs()
-    t.test_subsample()
+    t.test_mulelemwise()
     import unittest
     unittest.main()

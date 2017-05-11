@@ -1,7 +1,7 @@
 from .lin_op import LinOp
 from ..utils.cuda_codegen import ReverseInOut, float_constant
 import numpy as np
-
+import scipy.sparse
 
 class scale(LinOp):
     """Multiplication scale*X with a fixed scalar.
@@ -26,7 +26,11 @@ class scale(LinOp):
         Reads from inputs and writes to outputs.
         """
         self.forward(inputs, outputs)
-        
+
+    def sparse_matrix(self):
+        n = int(np.prod(self.shape))
+        return scipy.sparse.diags(np.ones(n)*self.scalar, dtype=np.float32)
+
     def forward_cuda_kernel(self, cg, num_tmp_vars, abs_idx, parent):
         #print("scale:forward:cuda")
         code, var, num_tmp_vars = cg.input_nodes(self)[0].forward_cuda_kernel(cg, num_tmp_vars, abs_idx, self)
@@ -35,11 +39,11 @@ class scale(LinOp):
 %(var)s *= %(scalar)s;
 """ % locals()
         return code, var, num_tmp_vars
-        
+
     def adjoint_cuda_kernel(self, cg, num_tmp_vars, abs_idx, parent):
         #print("scale:adjoint:cuda")
         return self.forward_cuda_kernel(ReverseInOut(cg), num_tmp_vars, abs_idx, parent)
-        
+
     def is_gram_diag(self, freq=False):
         """Is the lin  Gram diagonal (in the frequency domain)?
         """

@@ -1,7 +1,7 @@
 from .lin_op import LinOp
 from ..utils.cuda_codegen import ReverseInOut
 import numpy as np
-
+import scipy.sparse
 
 class sum(LinOp):
     """Sums its inputs.
@@ -28,7 +28,13 @@ class sum(LinOp):
         """
         for output in outputs:
             np.copyto(output, inputs[0])
-            
+
+    def sparse_matrix(self):
+        num_inputs = max(1, len(self.input_nodes))
+        m = int(np.prod(self.shape))
+        n = m * num_inputs
+        return scipy.sparse.diags([np.ones(m, dtype=np.float32)]*num_inputs, range(0, n, m), shape=(m,n), dtype=np.float32)
+
     def forward_cuda_kernel(self, cg, num_tmp_variables, abs_idx, parent):
         #print("sum:forward:cuda")
         input_nodes = cg.input_nodes(self)
@@ -39,8 +45,8 @@ class sum(LinOp):
             icode, ivar, num_tmp_variables = n.forward_cuda_kernel(cg, num_tmp_variables, abs_idx, self)
             code += icode
             code += "%(res)s += %(ivar)s;\n" % locals()
-        return code, res, num_tmp_variables 
-    
+        return code, res, num_tmp_variables
+
     def adjoint_cuda_kernel(self, cg, num_tmp_variables, abs_idx, parent):
         #print("sum:adjoint:cuda")
         code, var, num_tmp_variables = cg.output_nodes(self)[0].adjoint_cuda_kernel(cg, num_tmp_variables, abs_idx, self)
@@ -108,11 +114,14 @@ class copy(sum):
         Reads from inputs and writes to outputs.
         """
         super(copy, self).forward(inputs, outputs)
-        
+
+    def sparse_matrix(self):
+        return scipy.sparse.eye(int(np.prod(self.shape)), dtype=np.float32)
+
     def forward_cuda_kernel(self, cg, num_tmp_variables, abs_idx, parent):
         #print("copy:forward:cuda")
         return super(copy, self).adjoint_cuda_kernel(ReverseInOut(cg), num_tmp_variables, abs_idx, parent)
-        
+
     def adjoint_cuda_kernel(self, cg, num_tmp_variables, abs_idx, parent):
         #print("copy:adjoint:cuda")
         return super(copy, self).forward_cuda_kernel(ReverseInOut(cg), num_tmp_variables, abs_idx, parent)

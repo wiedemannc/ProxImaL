@@ -14,7 +14,7 @@ class LinOp(object):
     """Represents a linear operator.
     """
     __metaclass__ = abc.ABCMeta
-    
+
     instanceCnt = 0
 
     def __init__(self, input_nodes, shape, implem=None):
@@ -75,10 +75,10 @@ class LinOp(object):
     # might be overwritten by subclasses
     def cuda_kernel_available(self):
         return hasattr(self, 'forward_cuda_kernel') and hasattr(self, 'adjoint_cuda_kernel')
-    
+
     def forward_cuda(self, inputs, outputs):
         # Default implementation copies the gpu input arrays to the cpu,
-        # applies the cpu forward operation and copies the result back to 
+        # applies the cpu forward operation and copies the result back to
         # the gpu. Not the fastest implementation, but it works. To be fast,
         # either implement the forward_cuda_kernel or overwrite this method
         # to operate on the gpu arrays.
@@ -97,6 +97,13 @@ class LinOp(object):
         self.adjoint(inputs_cpu, outputs_cpu)
         for i,o in enumerate(outputs_cpu):
             outputs[i][:] = a.from_np(o)
+
+    def sparse_matrix(self):
+        """
+        shall return the matrix representation of the operator, as scipy.sparse
+        representation
+        """
+        raise NotImplementedError()
 
     @property
     def size(self):
@@ -117,7 +124,7 @@ class LinOp(object):
         Reads from inputs and writes to outputs.
         """
         return NotImplemented
-    
+
     def is_gram_diag(self, freq=False):
         """Is the lin op's Gram matrix diagonal (in the frequency domain)?
         """

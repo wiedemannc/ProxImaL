@@ -1,6 +1,6 @@
 from __future__ import print_function
 from .prox_fn import ProxFn
-from proximal.lin_ops import CompGraph, mul_elemwise
+from proximal.lin_ops import CompGraph, mul_elemwise, vstack
 import numpy as np
 from proximal.utils.utils import Impl, fftd, ifftd
 from scipy.sparse.linalg import lsqr, LinearOperator
@@ -23,6 +23,18 @@ class sum_squares(ProxFn):
         """
         v *= rho / (2 + rho)
         return v
+
+    def _cuda_kernel_available(self):
+        return False
+
+    def _prox_cuda(self, rho, gen_v, subidx, linidx, res):
+        v = gen_v([linidx]);
+        code = """/*sum_squares*/
+float %(res)s = 0.0f;
+%(res)s = %(rho)s / (2.f + %(rho)s);
+%(res)s *= %(v)s;
+""" % locals()
+        return code
 
     def _eval(self, v):
         """Evaluate the function on v (ignoring parameters).
@@ -50,9 +62,30 @@ class weighted_sum_squares(sum_squares):
     def _prox(self, rho, v, *args, **kwargs):
         """x = (rho/weight)/(2+(rho/weight))*v.
         """
-        rho_vec = rho / np.square(self.weight[self.weight != 0])
+        if hasattr(rho, "shape") and len(rho.shape) > 0:
+            valid = self.weight != 0
+            rho_vec = rho[valid] / np.square(self.weight[valid])
+        else:
+            rho_vec = rho / np.square(self.weight[self.weight != 0])
         v[self.weight != 0] *= rho_vec / (2 + rho_vec)
         return v
+
+    def cuda_additional_buffers(self):
+        res = super(weighted_sum_squares, self).cuda_additional_buffers()
+        res += [("wss2_weights", self.weight)]
+        return res
+
+    def _prox_cuda(self, rho, gen_v, subidx, linidx, res):
+        v = gen_v([linidx]);
+        code = """/*weighted_sum_squares*/
+float %(res)s = %(v)s;
+if( wss2_weights[%(linidx)s] != 0 )
+{
+    float rhotmp = %(rho)s / (wss2_weights[%(linidx)s]*wss2_weights[%(linidx)s]);
+    %(res)s *= rhotmp / (2.f + rhotmp);
+}
+""" % locals()
+        return code
 
     def _eval(self, v):
         """Evaluate the function on v (ignoring parameters).
@@ -106,7 +139,8 @@ class least_squares(sum_squares):
                 self.freq_diag = np.reshape(self.freq_diag[0:hsizehalide[0], ...],
                                             hsizehalide[0:3])
 
-        super(least_squares, self).__init__(lin_op, implem=implem, **kwargs)
+        lin_op_tmp = vstack(lin_op.variables())
+        super(least_squares, self).__init__(lin_op_tmp, implem=implem, **kwargs)
 
     def get_data(self):
         """Returns info needed to reconstruct the object besides the args.
@@ -126,13 +160,16 @@ class least_squares(sum_squares):
             offset = self.offset + b
         return self.solve(offset, rho=rho, v=v, lin_solver=lin_solver, *args, **kwargs)
 
+    def _cuda_kernel_available(self):
+        return False
+
     def _eval(self, v):
         """Evaluate the function on v (ignoring parameters).
         """
         Kv = np.zeros(self.K.output_size)
         self.K.forward(v.ravel(), Kv)
         return super(least_squares, self)._eval(Kv - self.offset)
-    
+
     def solve(self, b, rho=None, v=None, lin_solver="lsqr", *args, **kwargs):
         # KtK Operator is diagonal
         if self.diag is not None:

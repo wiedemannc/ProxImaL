@@ -1,7 +1,7 @@
 
 from .lin_op import LinOp
 import numpy as np
-
+import scipy.sparse
 
 class transpose(LinOp):
     """Permute axes.
@@ -30,10 +30,18 @@ class transpose(LinOp):
         shaped_input = np.transpose(inputs[0], self.inverse)
         np.copyto(outputs[0], shaped_input)
 
+    def sparse_matrix(self):
+        n = int(np.prod(self.shape))
+        tidx = np.reshape(np.arange(n, dtype=np.int32), self.shape)
+        sidx = np.transpose(np.zeros(tidx.shape, dtype=np.int32), self.inverse)
+        self.adjoint([tidx], [sidx])
+        V = np.ones(tidx.shape, dtype=np.float32)
+        return scipy.sparse.coo_matrix((V.flat, (sidx.flat,tidx.flat)), shape=(n,n), dtype=np.float32)
+
     def forward_cuda_kernel(self, cg, num_tmp_vars, absidx, parent):
         new_idx = [absidx[i] for i in self.inverse]
         return cg.input_nodes(self)[0].forward_cuda_kernel(cg, num_tmp_vars, new_idx, self)
-    
+
     def adjoint_cuda_kernel(self, cg, num_tmp_vars, absidx, parent):
         new_idx = [absidx[i] for i in self.axes]
         return cg.output_nodes(self)[0].adjoint_cuda_kernel(cg, num_tmp_vars, new_idx, self)

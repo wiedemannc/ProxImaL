@@ -1,7 +1,7 @@
 from .lin_op import LinOp
 from ..utils.cuda_codegen import indent, sub2ind, ind2subCode, NodeReverseInOut, ReverseInOut
 import numpy as np
-
+import scipy.sparse
 
 class vstack(LinOp):
     """Vectorizes and stacks inputs.
@@ -34,7 +34,10 @@ class vstack(LinOp):
             data = inputs[0][offset:size + offset]
             output_data[:] = np.reshape(data, output_data.shape)
             offset += size
-            
+
+    def sparse_matrix(self):
+        return scipy.sparse.eye( self.shape[0], dtype=np.float32 )
+
     def forward_cuda_kernel(self, cg, num_tmp_vars, abs_idx, parent):
         #print("vstack:forward:cuda")
         # multiple reshaped output in, linear index out
@@ -51,21 +54,21 @@ float %(res)s = 0;
             endoffset = offset + node.size
             sub_idx_vars = list(["idx_%d" % d for d in range(num_tmp_vars, num_tmp_vars + len(self.input_shapes[idx]))])
             num_tmp_vars += len(self.input_shapes[idx])
-            
+
             sub_idx_var_defs = indent(ind2subCode("%s - %d" % (abs_idx, offset), self.input_shapes[idx], sub_idx_vars), 4)
             #sub_expressions = ind2sub("%s - %d" % (abs_idx, offset), self.input_shapes[idx] )
             #sub_idx_var_defs = "".join("int %(var)s = %(exp)s;\n" % locals() for (var,exp) in zip(sub_idx_vars, sub_expressions))
             sub_idx_var_defs = indent(sub_idx_var_defs,4)
-            
+
             icode, var, num_tmp_vars = node.forward_cuda_kernel(cg, num_tmp_vars, sub_idx_vars, self)
             icode = indent(icode, 4)
             code += """\
 if( %(abs_idx)s >= %(offset)d && %(abs_idx)s < %(endoffset)d )
 {
     %(sub_idx_var_defs)s
-    
+
     %(icode)s
-    
+
     %(res)s = %(var)s;
 }""" % locals()
             offset = endoffset
@@ -74,7 +77,7 @@ if( %(abs_idx)s >= %(offset)d && %(abs_idx)s < %(endoffset)d )
             else:
                 code += "\n"
         return code, res, num_tmp_vars
-    
+
     def adjoint_cuda_kernel(self, cg, num_tmp_vars, abs_idx, parent):
         #print("vstack:adjoint:cuda")
         input_nodes = cg.input_nodes(self)
@@ -104,7 +107,7 @@ if( %(abs_idx)s >= %(offset)d && %(abs_idx)s < %(endoffset)d )
             icode = "float %(res)s = x[%(var)s];\n" % locals()
             var = res
         return code + icode, var, num_tmp_vars
-    
+
     def is_gram_diag(self, freq=False):
         """Is the lin op's Gram matrix diagonal (in the frequency domain)?
         """
@@ -152,7 +155,6 @@ class split(vstack):
 
     def __init__(self, output_nodes, implem=None):
         self.output_nodes = output_nodes
-        self.shape = [node.shape for node in output_nodes]
         self.input_nodes = []
         super(split,self).__init__(output_nodes, implem)
 
@@ -169,11 +171,27 @@ class split(vstack):
         Reads from inputs and writes to outputs.
         """
         super(split, self).forward(inputs, outputs)
-        
+
+    def sparse_matrix(self, output_node):
+        n = 0
+        off = 0
+        idx = None
+        for i,o in enumerate(self.output_nodes):
+            n += int(np.prod(o.shape))
+            if o is output_node:
+                idx = i
+            if idx is None:
+                off += int(np.prod(self.output_nodes[i].shape))
+        m = int(np.prod(self.output_nodes[idx].shape))
+        V = np.ones(m, dtype=np.float32)
+        J = np.arange(off, off+m, dtype=np.int32)
+        I = np.arange(m, dtype=np.int32)
+        return scipy.sparse.coo_matrix( (V, (I,J)), shape=(m,n), dtype=np.float32 )
+
     def forward_cuda_kernel(self, cg, num_tmp_variables, abs_idx, parent):
         #print("split:forward:cuda")
         return super(split, self).adjoint_cuda_kernel(ReverseInOut(cg), num_tmp_variables, abs_idx, parent)
-        
+
     def adjoint_cuda_kernel(self, cg, num_tmp_variables, abs_idx, parent):
         #print("split:adjoint:cuda")
         return super(split, self).forward_cuda_kernel(ReverseInOut(cg), num_tmp_variables, abs_idx, parent)

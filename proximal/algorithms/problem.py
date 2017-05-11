@@ -107,11 +107,11 @@ class Problem(object):
         # Absorb offsets.
         prox_fns = [absorb.absorb_offset(fn) for fn in prox_fns]
         # TODO more analysis of what solver to use.
-        
+
         if show_graph:
             print("Computational graph before optimizing:")
             graph_visualize(prox_fns, filename = show_graph if type(show_graph) is str else None)
-        
+
         # Short circuit with one function.
         if len(prox_fns) == 1 and type(prox_fns[0].lin_op) == Variable:
             fn = prox_fns[0]
@@ -138,7 +138,7 @@ class Problem(object):
                 L.norm_bound(output_mags)
                 if not NotImplemented in output_mags:
                     assert len(output_mags) == 1
-                
+
                     x = random(L.input_size)
                     x = x / LA.norm(x)
                     y = np.zeros(L.output_size)
@@ -148,7 +148,7 @@ class Problem(object):
                     if ny > output_mags[0]:
                         raise RuntimeError("wrong implementation of norm!")
                     print("%.3f <= ||K|| = %.3f (%.3f)" % (ny, output_mags[0], nL2))
-                
+
             # Scale the problem.
             if self.scale:
                 K = CompGraph(vstack([fn.lin_op for fn in psi_fns]),
@@ -170,17 +170,23 @@ class Problem(object):
                 # test adjoints
                 L = CompGraph(vstack([fn.lin_op for fn in psi_fns]))
                 from numpy.random import random
-                
+
                 x = random(L.input_size)
                 yt = np.zeros(L.output_size)
                 #print("x=", x)
                 yt = L.forward(x, yt)
+
+                A = L.sparse_matrix()
+                ytt = A.dot(x)
+
                 #print("yt=", yt)
                 #print("x=", x)
                 y = random(L.output_size)
                 #print("y=", y)
                 xt = np.zeros(L.input_size)
                 xt = L.adjoint(y, xt)
+
+                xtt = A.T.dot(y)
                 #print("xt=", xt)
                 #print("y=", y)
                 r = np.abs( np.dot(np.ravel(y), np.ravel(yt)) - np.dot(np.ravel(x), np.ravel(xt)) )
@@ -193,7 +199,7 @@ class Problem(object):
                     raise RuntimeError("Unmatched adjoints: " + str(r))
                 else:
                     print("Adjoint test passed.", r)
-                                    
+
             if self.implem == Impl['pycuda']:
                 kwargs['adapter'] = PyCudaAdapter()
             opt_val = module.solve(psi_fns, omega_fns,

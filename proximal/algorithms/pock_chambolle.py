@@ -2,7 +2,7 @@ from __future__ import print_function
 import tempfile
 import os
 from proximal.lin_ops import (CompGraph, est_CompGraph_norm, Variable,
-                              vstack)
+                              vstack, lin_op)
 from proximal.utils.timings_log import TimingsLog, TimingsEntry
 from proximal.utils.utils import graph_visualize
 from proximal.utils.cuda_codegen import NumpyAdapter
@@ -10,7 +10,7 @@ from .invert import get_least_squares_inverse, max_diag_set
 import numpy as np
 
 class PCUniformConvexGorF:
-    """This class can be used to implement algorithm 2 of the Pock Chambolle 
+    """This class can be used to implement algorithm 2 of the Pock Chambolle
     paper for 1/N^2 convergence rate if either Psi or Omega is uniformly convex.
     """
     def __init__(self, gamma, tau0):
@@ -18,22 +18,22 @@ class PCUniformConvexGorF:
         self._gamma = gamma
         self._tau = tau0
         self._theta = 1.0 / np.sqrt(1 + 2*gamma*tau0)
-        
+
     def _recalculate(self, it, L):
         self._lastIt = it
         self._tau = self._theta*self._tau
         self._theta = 1.0 / np.sqrt(1 + 2*self._gamma*self._tau)
-        
+
     def tau(self, it, L):
         if self._lastIt != it:
             self._recalculate(it,L)
         return self._tau
-            
+
     def sigma(self, it, L):
         if self._lastIt != it:
             self._recalculate(it,L)
         return 1.0/((L**2)*self._tau)
-    
+
     def theta(self, it, L):
         if self._lastIt != it:
             self._recalculate(it,L)
@@ -105,15 +105,15 @@ def solve(psi_fns, omega_fns, tau=None, sigma=None, theta=None,
           lin_solver="cg", lin_solver_options=None, conv_check=100,
           try_diagonalize=True, try_fast_norm=False, scaled=True,
           metric=None, convlog=None, verbose=0, callback=None, adapter = NumpyAdapter(), ppd=False, cuda_code_file=None):
-    
+
     # Can only have one omega function.
     assert len(omega_fns) <= 1
     prox_fns = psi_fns + omega_fns
     stacked_ops = vstack([fn.lin_op for fn in psi_fns])
     K = CompGraph(stacked_ops)
-    
+
     #graph_visualize(prox_fns)
-    
+
     if adapter.implem() == 'numpy':
         K_forward = K.forward
         K_adjoint = K.adjoint
@@ -128,40 +128,42 @@ def solve(psi_fns, omega_fns, tau=None, sigma=None, theta=None,
             K.gen_cuda_code()
             open(cuda_code_file, "w").write("/* CUDA FORWARD IMPLEMENTAIOTN */\n" + K.cuda_forward_subgraphs.cuda_code + "\n/*CUDA ADJOINT IMPLEMENTAIOTN */" + K.cuda_adjoint_subgraphs.cuda_code)
     else:
-        raise RuntimeError("Implementation %s unknown" % adapter.implem())        
-    print(adapter.implem(), cuda_code_file)
-    v = adapter.zeros(K.input_size)
-    Kv = adapter.zeros(K.output_size)
+        raise RuntimeError("Implementation %s unknown" % adapter.implem())
+
     # Select optimal parameters if wanted
     if tau is None or sigma is None or theta is None:
-        if not ppd:
-            tau, sigma, theta = est_params_pc(K, tau, sigma, verbose, scaled, try_fast_norm)        
+        if type(ppd) is tuple:
+            ppd_alpha = ppd[1]
+            ppd = ppd[0]
         else:
-            tau = adapter.zeros(K.output_size)
-            sigma = adapter.zeros(K.input_size)
-            for j in range(len(v)):
-                v[j] = adapter.from_np(np.array(adapter.scalar(1)))
-                K_forward(v, Kv)
-                v[j] = adapter.from_np(np.array(adapter.scalar(0)))
-                tau[j] = 1./adapter.sum(adapter.abs(Kv))
-                if( j % 100 == 0 ): print("%d / %d" % (j, len(v)))
-            print(tau)
-            Kv[:] = 0
-            for i in range(len(Kv)):
-                Kv[i] = adapter.from_np(np.array(adapter.scalar(1)))
-                K_adjoint(Kv, v)
-                Kv[i] = adapter.from_np(np.array(adapter.scalar(0)))
-                sigma[i] = 1./adapter.sum(adapter.abs(v))
-                if( i % 1000 == 0 ): print("%d / %d" % (i, len(Kv)))
-            print(sigma)
+            ppd_alpha = 1
+        if not ppd:
+            tau, sigma, theta = est_params_pc(K, tau, sigma, verbose, scaled, try_fast_norm)
+        else:
+            sm = K.sparse_matrix()
+            # abs(K)
+            # alpha = 1:
+            sm = sm.maximum(-sm) # assume sm is real and take absolute value of individual entries
+            sigma = adapter.zeros(K.output_size)
+            tau = adapter.zeros(K.input_size)
+            if ppd_alpha == 1:
+                sigma[:] = adapter.scalar(1.)/np.maximum(sm.dot(np.ones(sm.shape[1], dtype=np.float32)),adapter.scalar(1e-5))
+                tau[:] = adapter.scalar(1.)/np.maximum(sm.T.dot(np.ones(sm.shape[0], dtype=np.float32)),adapter.scalar(1e-5))
+            else:
+                sigma[:] = adapter.scalar(1.)/np.maximum(sm.power(ppd_alpha).dot(np.ones(sm.shape[1], dtype=np.float32)),adapter.scalar(1e-5))
+                tau[:] = adapter.scalar(1.)/np.maximum(sm.power(2-ppd_alpha).T.dot(np.ones(sm.shape[0], dtype=np.float32)),adapter.scalar(1e-5))
             theta = 1
-            xxx
+
+            #import matplotlib.pyplot as plt
+            #plt.plot(tau); plt.show()
+            #plt.plot(sigma); plt.show()
+            #xxx
     elif callable(tau) or callable(sigma) or callable(theta):
         if scaled:
             L = 1
         else:
             L = est_CompGraph_norm(K, try_fast_norm)
-    
+
     # Initialize
     x = adapter.zeros(K.input_size)
     y = adapter.zeros(K.output_size)
@@ -193,12 +195,12 @@ def solve(psi_fns, omega_fns, tau=None, sigma=None, theta=None,
     prox_log = TimingsLog(prox_fns)
     prox_log_tot = TimingsLog(prox_fns)
     # Time iterations.
-    iter_timing = TimingsLog(["pc_iteration_tot", 
+    iter_timing = TimingsLog(["pc_iteration_tot",
                               "copyprev",
-                              "calcz", 
-                              "calcx", 
-                              "omega_fn", 
-                              "xbar", 
+                              "calcz",
+                              "calcx",
+                              "omega_fn",
+                              "xbar",
                               "conv_check"])
 
     # Convergence log for initial iterate
@@ -209,7 +211,8 @@ def solve(psi_fns, omega_fns, tau=None, sigma=None, theta=None,
             evp = f.value
             #print(str(f), '->', f.value)
             objval += [evp]
-        print("obj_val = %02.03e [%s]" % (sum(objval), " ".join(["%02.03e" % v for v in objval])))
+        if verbose > 0:
+            print("obj_val = %02.03e [%s]" % (sum(objval), " ".join(["%02.03e" % v for v in objval])))
         if convlog is not None:
             convlog.record_objective(sum(objval))
             convlog.record_timing(0.0)
@@ -231,11 +234,11 @@ def solve(psi_fns, omega_fns, tau=None, sigma=None, theta=None,
             ctheta = theta(i, L)
         else:
             ctheta = theta
-            
-        csigma = adapter.scalar(csigma)
-        ctau = adapter.scalar(ctau)
-        ctheta = adapter.scalar(ctheta)
-            
+        if not ppd:
+            csigma = adapter.scalar(csigma)
+            ctau = adapter.scalar(ctau)
+            ctheta = adapter.scalar(ctheta)
+
         # Keep track of previous iterates
         iter_timing["copyprev"].tic()
         adapter.copyto(prev_x, x)
@@ -256,13 +259,17 @@ def solve(psi_fns, omega_fns, tau=None, sigma=None, theta=None,
             prox_log_tot[fn].tic()
             slc = slice(offset, offset + fn.lin_op.size, None)
             z_slc = adapter.reshape(z[slc], fn.lin_op.shape)
+            if ppd:
+                csigma_slc = adapter.reshape(csigma[slc], fn.lin_op.shape)
+            else:
+                csigma_slc = csigma
             # Moreau identity: apply and time prox.
             prox_log[fn].tic()
-            y[slc] = adapter.flatten( prox_off_and_fac(z_slc, -csigma, fn, csigma, z_slc / csigma, i) )
+            y[slc] = adapter.flatten( prox_off_and_fac(z_slc, -csigma_slc, fn, csigma_slc, z_slc / csigma_slc, i) )
             prox_log[fn].toc()
             offset += fn.lin_op.size
             prox_log_tot[fn].toc()
-        
+
         iter_timing["calcx"].tic()
         if offset < y.shape[0]:
             y[offset:] = 0
@@ -292,13 +299,27 @@ def solve(psi_fns, omega_fns, tau=None, sigma=None, theta=None,
         # Convergence log
         if convlog is not None:
             convlog.toc()
-            K.update_vars(adapter.to_np(x))
-            objval = list([fn.value for fn in prox_fns])
-            objval = sum(objval)
+            if adapter.implem() == 'pycuda':
+                K_forward(x, Kx)
+                iobjval2 = []
+                offset = 0
+                for fn in psi_fns:
+                    slc = slice(offset, offset + fn.lin_op.size, None)
+                    Kx_slc = adapter.reshape(Kx[slc], fn.lin_op.shape)
+                    iobjval2.append(fn.eval_cuda(Kx_slc))
+                    offset += fn.lin_op.size
+                for fn in omega_fns:
+                    xtmp = adapter.reshape(x, fn.lin_op.shape)
+                    iobjval2.append(fn.eval_cuda(xtmp))
+                objval = sum(iobjval2)
+            else:
+                K.update_vars(adapter.to_np(x))
+                iobjval = list([fn.value for fn in prox_fns])
+                objval = sum(iobjval)
             convlog.record_objective(objval)
 
         """ Old convergence check
-        #Very basic convergence check.
+        #Very basic convergence check.ŝ
         r_x = np.linalg.norm(x - prev_x)
         r_xbar = np.linalg.norm(xbar - prev_xbar)
         r_ybar = np.linalg.norm(y - prev_y)
@@ -324,13 +345,16 @@ def solve(psi_fns, omega_fns, tau=None, sigma=None, theta=None,
                 max([np.linalg.norm(adapter.to_np(prev_Kx)), np.linalg.norm(adapter.to_np(z))])
 
             K_adjoint(u, KTu)
-            eps_dual = np.sqrt(K.input_size) * eps_abs + eps_rel * np.linalg.norm(adapter.to_np(KTu)) / csigma
+            if hasattr(csigma, "shape"):
+                eps_dual = np.sqrt(K.input_size) * eps_abs + eps_rel * np.linalg.norm(adapter.to_np(KTu/ctau))
+            else:
+                eps_dual = np.sqrt(K.input_size) * eps_abs + eps_rel * np.linalg.norm(adapter.to_np(KTu)) / csigma
 
             if not callback is None or verbose == 2:
                 K.update_vars(adapter.to_np(x))
             if not callback is None:
                 callback(adapter.to_np(x))
-            
+
             # Progress
             if verbose > 0:
                 # Evaluate objective only if required (expensive !)

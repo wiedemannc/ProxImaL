@@ -1,33 +1,37 @@
 from ..lin_ops import lin_op
 from ..utils.cuda_codegen import indent, ind2sub, sub2ind, float_constant, compile_cuda_kernel, cuda_function, PyCudaAdapter
 import numpy as np
+import logging
 import scipy.ndimage.filters
+import scipy.sparse
 
 class conv_nofft(lin_op.LinOp):
     """
     Convolution designed for small kernels. A 'replicate' padding is applied to the input image.
-    
-    Note: If the kernel is seperable (i.e. K = v.T * v for a vector v), you might want to 
+
+    Note: If the kernel is seperable (i.e. K = v.T * v for a vector v), you might want to
     use conv_nofft(v.T, conv_nofft(v, I))
     """
     def __init__(self, kernel, arg):
-    
+
         #self.truncr_2D = lambda x, s: np.transpose(self.truncr(np.transpose(self.truncr(x, s[0])), s[1]))
         self.padr_ND = lambda x, s: np.pad(x, [ [s[i],s[i]] for i in range(len(s)) ], mode='edge')
         self.pad0_ND = lambda x, s: np.pad(x, [ [s[i],s[i]] for i in range(len(s)) ], mode='constant')
+
+        assert (np.alltrue(np.mod(np.array(kernel.shape), 2) == 1))
 
         self.kernel = np.array(kernel, np.float32)
         self.cuda_source = None
         if len(kernel.shape) != len(arg.shape):
             raise RuntimeError("number of kernel dimensions must be equal to arg dimensions, pad with 1's if necessary")
-        
+
         for d in range(len(kernel.shape)):
             if kernel.shape[d] > arg.shape[d]:
                 raise RuntimeError("kernel is larger than argument, this is unsupported.")
-                
+
         # Set implementation in super-class
         super(conv_nofft, self).__init__([arg], arg.shape)
-        
+
     def forward(self, inputs, outputs):
         """The forward operator.
 
@@ -39,8 +43,12 @@ class conv_nofft(lin_op.LinOp):
         convolved = scipy.ndimage.filters.convolve(padded, self.kernel, mode='constant', cval=0.0)
         truncated = self.trunc0_ND(convolved, ts)
         np.copyto(outputs[0], truncated)
-        
+
         #print("myconv:forward", arg, outputs[0])
+
+    @property
+    def kernel_mirrored(self):
+        return self.kernel[ [slice(None,None,-1)]*len(self.kernel.shape) ]
 
     def adjoint(self, outputs, inputs):
         """The adjoint operator.
@@ -50,10 +58,55 @@ class conv_nofft(lin_op.LinOp):
         arg = outputs[0]
         ts = [s//2 for s in self.kernel.shape]
         padded = self.pad0_ND(arg, ts)
-        convolved = scipy.ndimage.filters.convolve(padded, self.kernel[::-1, ::-1], mode='constant', cval=0.0)
+        convolved = scipy.ndimage.filters.convolve(padded, self.kernel_mirrored, mode='constant', cval=0.0)
         truncated = self.truncr_ND(convolved, ts)
         np.copyto(inputs[0], truncated)
         #print("myconv:adjoint", arg, inputs[0])
+
+    def sparse_matrix(self):
+        kT = self.kernel_mirrored
+        n = int(np.prod(self.shape))
+        off = np.array([int(np.prod(self.shape[i+1:])) for i in range(len(self.shape))])
+        kn = int(np.prod(self.kernel.shape))
+        ts = np.array([s//2 for s in self.kernel.shape])
+
+        # last index is the subind dimension
+        img_indices = np.transpose(np.indices(self.shape, dtype=np.int32), list(range(1,len(self.shape)+1)) + [0])
+
+        diags = np.zeros((kn,n), dtype=np.float32)
+        min_valid = np.array( [0]*len(self.shape), dtype=np.int32 )
+        max_valid = np.array( self.shape, dtype=np.int32 ) - 1
+        offsets = []
+        for i in range(kn):
+            idx = np.array(np.unravel_index(i, self.kernel.shape), dtype=np.int32)
+            w = kT.flat[i]
+            # convert to relative offsets:
+            idx -= ts
+
+            # transform to image coordinates
+            kidx = img_indices + idx
+            # out of bounds image coordinates are mapped to the
+            iidx = np.minimum(np.maximum(kidx, min_valid), max_valid)
+            iidx = np.transpose(iidx, [iidx.shape[-1]] + list(range(len(self.shape))))
+            iidx = np.ravel_multi_index(iidx, self.shape)
+
+            # negative indices
+            knidx = np.maximum(-kidx, min_valid)
+            knidx = np.transpose(knidx, [knidx.shape[-1]] + list(range(len(self.kernel.shape))))
+            knidx = np.ravel_multi_index(knidx, self.kernel.shape)
+
+            # positive indices
+            kpidx = np.maximum(kidx - max_valid, min_valid)
+            kpidx = np.transpose(kpidx, [kpidx.shape[-1]] + list(range(len(self.kernel.shape))))
+            kpidx = np.ravel_multi_index(kpidx, self.kernel.shape)
+
+            kidx = i + knidx - kpidx
+
+            o = np.sum(idx*off)
+            offsets.append(o)
+            diags[kidx,iidx] += w
+
+        return scipy.sparse.spdiags(diags, offsets, n, n)
 
     def trunc0_ND(self, x, s):
         slices = [slice(s[i],x.shape[i]-s[i]) for i in range(len(s))]
@@ -65,12 +118,12 @@ class conv_nofft(lin_op.LinOp):
         if s[1] == 0:
             return x[s[0]:-s[0],:]
         return x[s[0]:-s[0],s[1]:-s[1]]
-    
+
     def truncr(self, x, s):
         if s == 0:
             return x
         return np.concatenate((np.array([np.sum(x[:(s+1),...], 0)]), x[(s+1):-(s+1),...], np.array([np.sum(x[-(s+1):,...], 0)])), axis=0)
-    
+
     def truncr_ND(self, x, s):
         for a in range(len(s)):
             t = list(range(len(s)))
@@ -80,16 +133,16 @@ class conv_nofft(lin_op.LinOp):
         return x
 
     def cuda_kernel_available(self):
-        # it is better to split up the comp graph, and do the convolution 
+        # it is better to split up the comp graph, and do the convolution
         # on dedicated input/output buffers than in-place in the comp graph
         return False
-    
+
     def _gen_cuda_inner(self, func_name, kernel):
         """generate a cuda kernel for the inner part of the convolution with <kernel>
         which doesn't need the extra code for the borders"""
         # for being most generic we don't use the x/y/z dimensions of cuda, but
         # we calculate that for ourselfs
-        
+
         inner_shape = [d-((k//2)*2) for d,k in zip(self.shape, kernel.shape)]
         dimy = int(np.prod(inner_shape))
         offsets = [k//2 for k in kernel.shape]
@@ -98,11 +151,11 @@ class conv_nofft(lin_op.LinOp):
         gidx = ["(%s) + %d" % (i, o) for i,o in zip(iidx, offsets)]
         idxdecl = indent("".join(["int idx%d = %s;\n" % (i,s) for i,s in enumerate(gidx)]), 8)
         linidx = indent("int linidx = %s;\n" % ("+".join(["idx%d * %d" % (i,s) for i,s in enumerate(strides)])), 8)
-        
+
         code = """
 __global__ void %(func_name)s(const float *x, float *y)
 {
-    int index = blockIdx.x * blockDim.x + threadIdx.x; 
+    int index = blockIdx.x * blockDim.x + threadIdx.x;
     int stride = blockDim.x * gridDim.x;
     for( int yidx = index; yidx < %(dimy)d; yidx += stride )
     {
@@ -110,15 +163,15 @@ __global__ void %(func_name)s(const float *x, float *y)
         %(linidx)s
         float res = 0.0f;
 """ % locals()
-        
+
         ki = [0] * len(kernel.shape)
         while ki[0] < kernel.shape[0]:
             kernelvalue = float_constant(kernel.item(tuple(ki)))
             relcoord = [i-o for i,o in zip(ki,offsets)]
             linoff = sum([c*s for c,s in zip(relcoord,strides)])
-            
+
             code += indent("res += %(kernelvalue)s * x[linidx - (%(linoff)s)];\n" % locals(), 8)
-            
+
             ki[-1] += 1
             d = len(ki)-1
             while d > 0 and ki[d] >= kernel.shape[d]:
@@ -130,18 +183,18 @@ __global__ void %(func_name)s(const float *x, float *y)
     }
 }""" % locals()
         return code, int(np.prod(inner_shape))
-    
+
     def _gen_cuda_outer(self, func_name, generator):
         """generate a cuda kernel for the outer part of the convolution using <generator>
         as a generator for the inner part (different generators are used for forward and
         adjoint)"""
-        
-        # we have to generate the indices 
+
+        # we have to generate the indices
         #   (0:p(1)-1,...), (s(1)-p(1):end,...)
         #   (:,0:p(2)-1,...), (:,s(2)-p(2):end,...)
         #   (:,:,0:p(3)-1,...), (:,:,s(3)-p(3):end,...)
         #   ... given that p = kernel.shape//2 with <kernel>
-        
+
         borders = [] # a list of processing blocks, given as (start,stop) indices in the original array (self.shape)
         kernel = self.kernel
         for d in range(len(kernel.shape)):
@@ -153,7 +206,7 @@ __global__ void %(func_name)s(const float *x, float *y)
         code = """
 __global__ void %(func_name)s(const float *x, float *y)
 {
-    int index = blockIdx.x * blockDim.x + threadIdx.x; 
+    int index = blockIdx.x * blockDim.x + threadIdx.x;
     int stride = blockDim.x * gridDim.x;
     int relidx;
     float res;
@@ -167,12 +220,12 @@ __global__ void %(func_name)s(const float *x, float *y)
         for currb in borders:
             bshape = [cb[1] - cb[0] for cb in currb]
             nelem = int(np.prod(bshape))
-            
+
             idx = ind2sub("relidx", bshape)
             idxdecl = indent("\n".join(["idx%d = %d + (%s);" % (i,currb[i][0], s) for i,s in enumerate(idx)]), 12)
-            
+
             icode = indent(generator(["idx%d" % i for i in range(len(self.shape))]), 12)
-            
+
             bcode.append("""
         if( yidx >= %(offset)d && yidx < %(offset)d + %(nelem)d )
         {
@@ -216,7 +269,7 @@ res = 0.0f;
         linidx = sub2ind(idx, self.shape)
         code += "y[%s] = res;\n" % linidx
         return code
-                  
+
     def _zerosum_outer_generator(self, idx, kernel):
         idxs = []
         idxe = []
@@ -231,7 +284,7 @@ res = 0.0f;
         aidxs = indent("\n".join(idxs), 4)
         aidxe = indent("\n".join(idxe), 4)
         aidxl = indent("\n".join(idxl), 4)
-        
+
         code = """
 {
     %(aidxl)s;
@@ -240,7 +293,7 @@ res = 0.0f;
 
     res = 0.0f;
 """ % locals()
-        
+
         for d in range(len(idx)):
             code += "for(idxl_%(d)d = idxs_%(d)d; idxl_%(d)d <= idxe_%(d)d; idxl_%(d)d++)\n" % locals()
         code += """
@@ -258,7 +311,7 @@ res = 0.0f;
             svar = "x[%s]" % sub2ind(sidx, self.shape)
             valididx = ["(%s >= 0) && (%s < %d)" %(s, s, w) for s,w in zip(sidx, self.shape)]
             valididx = " && ".join(valididx)
-            
+
             code += indent("""
 if( %(valididx)s )
 {
@@ -272,38 +325,39 @@ if( %(valididx)s )
                 d -= 1
                 ki[d] += 1
         linidx = sub2ind(idx, self.shape)
-        code += """        
+        code += """
     }
     y[%(linidx)s] = res;
 }
 """ % locals()
         return code
-                
+
     def gen_cuda(self):
         try:
             from proximal.utils import cuda_npp
             has_cuda_npp = True
         except:
             from traceback import format_exc
-            print(format_exc())
+            logging.warning("Cannot import cuda_npp")
+            logging.info(format_exc())
             has_cuda_npp = False
-            
+
         slices = []
         for d in range(len(self.kernel.shape)):
             slices.append(slice(None,None,-1))
         kernelM = self.kernel[tuple(slices)]
-        
+
         is2Dconv = len(kernelM.shape) != 2 or not (len(kernelM.shape) == 3 and kernelM.shape[-1] == 1)
         numChannels = 1 if len(kernelM.shape) == 2 else self.shape[-1]
-        
+
         if not has_cuda_npp or not is2Dconv or numChannels > 4:
-            print("Warning: conv_nofft: using naive kernel.", has_cuda_npp, is2Dconv, numChannels)
-        
+            logging.info("conv_nofft: using naive kernel.")
+
             code1, n1 = self._gen_cuda_inner("cuda_conv_nofft_forward_inner", self.kernel)
             code2, n2 = self._gen_cuda_outer("cuda_conv_nofft_forward_outer", lambda x: self._replicate_outer_generator(x, self.kernel) )
             code3, n3 = self._gen_cuda_inner("cuda_conv_nofft_adjoint_inner", kernelM)
             code4, n4 = self._gen_cuda_outer("cuda_conv_nofft_adjoint_outer", lambda x: self._zerosum_outer_generator(x, kernelM))
-            
+
             #print(code1+code2+code3+code4)
             self.cuda_source = code1 + code2 + code3 + code4
             mod = compile_cuda_kernel(self.cuda_source)
@@ -311,12 +365,12 @@ if( %(valididx)s )
             cuda_forward_func_outer = cuda_function(mod, "cuda_conv_nofft_forward_outer", n2)
             cuda_adjoint_func_inner = cuda_function(mod, "cuda_conv_nofft_adjoint_inner", n3)
             cuda_adjoint_func_outer = cuda_function(mod, "cuda_conv_nofft_adjoint_outer", n4)
-            
+
         else:
-            print("Warning: conv_nofft: using npp kernel.")
+            logging.info("conv_nofft: using npp kernel.")
 
             # npp optimized version
-            
+
             code2, n2 = self._gen_cuda_outer("cuda_conv_nofft_forward_outer", lambda x: self._replicate_outer_generator(x, self.kernel) )
             code4, n4 = self._gen_cuda_outer("cuda_conv_nofft_adjoint_outer", lambda x: self._zerosum_outer_generator(x, kernelM))
 
@@ -326,7 +380,7 @@ if( %(valididx)s )
             cuda_forward_func_outer = cuda_function(mod, "cuda_conv_nofft_forward_outer", n2)
             #cuda_adjoint_func_inner = cuda_function(mod, "cuda_conv_nofft_adjoint_inner", n3)
             cuda_adjoint_func_outer = cuda_function(mod, "cuda_conv_nofft_adjoint_outer", n4)
-            
+
             roi = [self.kernel.shape[1]//2, self.kernel.shape[0]//2, self.shape[1] - 2*(self.kernel.shape[1]//2), self.shape[0] - 2*(self.kernel.shape[0]//2)]
             a = PyCudaAdapter()
             kgpu = a.from_np(self.kernel)
@@ -336,20 +390,20 @@ if( %(valididx)s )
 
         cuda_forward_func = lambda *args: cuda_forward_func_inner(*args) + cuda_forward_func_outer(*args)
         setattr(self, "cuda_conv_nofft_forward", cuda_forward_func)
-    
+
         cuda_adjoint_func = lambda *args: cuda_adjoint_func_inner(*args) + cuda_adjoint_func_outer(*args)
-        setattr(self, "cuda_conv_nofft_adjoint", cuda_adjoint_func)                    
+        setattr(self, "cuda_conv_nofft_adjoint", cuda_adjoint_func)
 
     def forward_cuda(self, inputs, outputs):
         if self.cuda_source is None:
             self.gen_cuda()
         self.cuda_conv_nofft_forward(inputs[0], outputs[0])
-            
+
     def adjoint_cuda(self, inputs, outputs):
         if self.cuda_source is None:
             self.gen_cuda()
         self.cuda_conv_nofft_adjoint(inputs[0], outputs[0])
-        
+
     def norm_bound(self, input_mags):
         """Gives an upper bound on the magnitudes of the outputs given inputs.
 
@@ -364,7 +418,6 @@ if( %(valididx)s )
             Magnitude of outputs.
         """
         res = np.sum(np.abs(self.kernel))*input_mags[0]
-        #print("norm_bound=", res)
         return res
 
 

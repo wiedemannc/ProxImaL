@@ -1,8 +1,9 @@
 from .lin_op import LinOp
+from ..utils.cuda_codegen import sub2ind
 import numpy as np
 from proximal.utils.utils import Impl
 from proximal.halide.halide import Halide
-
+import scipy.sparse
 
 class mul_elemwise(LinOp):
     """Elementwise multiplication weight*X with a fixed constant.
@@ -10,6 +11,7 @@ class mul_elemwise(LinOp):
 
     def __init__(self, weight, arg, implem=None):
         assert arg.shape == weight.shape
+        #assert np.all(weight > 0.0)
         self.weight = weight
         shape = arg.shape
 
@@ -42,6 +44,39 @@ class mul_elemwise(LinOp):
         Reads from inputs and writes to outputs.
         """
         self.forward(inputs, outputs)
+
+    def sparse_matrix(self):
+        n = self.weight.flatten().shape[0]
+        return scipy.sparse.diags([self.weight.flatten()], [0], shape=(n,n), dtype=np.float32)
+
+    def cuda_additional_buffers(self):
+        return [("mul_elemwise_%d" % self.linop_id, np.ascontiguousarray(self.weight.astype(np.float32)))]
+
+    def cuda_kernel_base(self, cg, num_tmp_vars, abs_idx, parent, fn):
+        arg = self.cuda_additional_buffers()[0][0]
+        linidx = sub2ind(abs_idx, self.shape)
+
+        res = "res_%d" % num_tmp_vars
+        num_tmp_vars += 1
+
+        code = """/* mul_elemwise */
+float %(res)s = %(arg)s[%(linidx)s];
+""" % locals()
+        num_tmp_vars += 1
+        n = cg.input_nodes(self)[0]
+        icode, var, num_tmp_vars = fn(cg, num_tmp_vars, abs_idx, self)
+        code += """
+%(icode)s
+%(res)s *= %(var)s;
+""" % locals()
+
+        return code, res, num_tmp_vars
+
+    def forward_cuda_kernel(self, cg, num_tmp_vars, abs_idx, parent):
+        return self.cuda_kernel_base(cg, num_tmp_vars, abs_idx, parent, cg.input_nodes(self)[0].forward_cuda_kernel)
+
+    def adjoint_cuda_kernel(self, cg, num_tmp_vars, abs_idx, parent):
+        return self.cuda_kernel_base(cg, num_tmp_vars, abs_idx, parent, cg.output_nodes(self)[0].adjoint_cuda_kernel)
 
     def is_diag(self, freq=False):
         """Is the lin op diagonal (in the frequency domain)?

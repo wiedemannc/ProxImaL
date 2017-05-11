@@ -10,11 +10,12 @@ import copy as cp
 from collections import defaultdict
 import numpy as np
 from scipy.sparse.linalg import LinearOperator, eigs
+import scipy.sparse
 
 class CompGraph(object):
     """A computation graph representing a composite lin op.
     """
-    
+
     instanceCnt = 0
 
     def __init__(self, end, implem=None):
@@ -53,7 +54,7 @@ class CompGraph(object):
                     self.constants.append(node)
                 else:
                     # avoid copying too many nodes
-                    if not node in node_to_copies:                            
+                    if not node in node_to_copies:
                         cnode = cp.copy(node)
                         node.orig_node = node.orig_node
                         node_to_copies[node] = cnode
@@ -95,7 +96,7 @@ class CompGraph(object):
                         self.output_edges[copy_node].append(e)
                     else:
                         newinedges.append( e )
-                self.input_edges[ns] = newinedges            
+                self.input_edges[ns] = newinedges
 
         # Make copy node for each variable.
         old_vars = self.orig_end.variables()
@@ -140,14 +141,14 @@ class CompGraph(object):
 
         self.edges += split_outputs
         self.output_edges[self.start] = split_outputs
-        
+
         self.cuda_forward_subgraphs = None
         self.cuda_adjoint_subgraphs = None
-        
+
         # A record of timings.
         self.forward_log = TimingsLog(self.nodes + [self])
         self.adjoint_log = TimingsLog(self.nodes + [self])
-        
+
     def input_nodes(self, node):
         return list([e.start for e in self.input_edges[node]])
 
@@ -167,30 +168,30 @@ class CompGraph(object):
     def gen_cuda_code(self):
         # The basic original idea is to generate a cuda kernel for the whole graph
         # this is done by calling the output node (self.end for forward direction,
-        # self.start for adjoint direction), and these nodes will recursively 
+        # self.start for adjoint direction), and these nodes will recursively
         # generate the kernel operations also for their input nodes.
         #
         # There are certain nodes in the graph which are either not yet ported to
         # cuda or they don't efficiently fit into the above scheme. For example,
         # it is not efficient to perform a convolution operation in the middle of
-        # a long linear graph (because the preceding image values have to be 
+        # a long linear graph (because the preceding image values have to be
         # calculated size(conv_kernel) times). Therefore we need a way to split
         # the graph into subgraphs, and calculate individual nodes for their own.
         #
         # Nodes who want to be isolated can either not implement the forward_cuda_kernel
         # function or override the function cuda_kernel_available(self) and return false.
-        
+
         # forward direction
         self.cuda_forward_subgraphs = CudaSubGraph(self.input_nodes, self.output_nodes, self.end)
         self.cuda_forward_subgraphs.gen_code("forward_cuda_kernel")
         #print("Forward subgraphs:")
         #self.cuda_forward_subgraphs.visualize()
-        
+
         self.cuda_adjoint_subgraphs = CudaSubGraph(self.output_nodes, self.input_nodes, self.start)
         self.cuda_adjoint_subgraphs.gen_code("adjoint_cuda_kernel")
         #print("Adjoint subgraphs:")
         #self.cuda_adjoint_subgraphs.visualize()
-                                                                         
+
     def forward_cuda(self, x, y, printt=False):
         if 0:
             needcopy = False
@@ -228,7 +229,7 @@ class CompGraph(object):
                 y = y.get()
             self.adjoint(y, x)
             if needcopy:
-                xorig[:] = gpuarray.to_gpu(x)            
+                xorig[:] = gpuarray.to_gpu(x)
         else:
             if self.cuda_adjoint_subgraphs is None:
                 self.gen_cuda_code()
@@ -242,7 +243,7 @@ class CompGraph(object):
             self.adjoint_log[self].toc()
             if printt: print(t)
         return x
-        
+
     def forward(self, x, y):
         """Evaluates the forward composition.
 
@@ -265,7 +266,7 @@ class CompGraph(object):
             #    for io in range(1,len(outputs)):
             #        np.copyto(outputs[io], outputs[0])
             self.forward_log[node].toc()
-            
+
         self.forward_log[self].tic()
         # Evaluate forward graph and time it.
         self.traverse_graph(forward_eval, True)
@@ -307,6 +308,35 @@ class CompGraph(object):
         self.traverse_graph(adjoint_eval, False)
         self.adjoint_log[self].toc()
         return v
+
+    def sparse_matrix(self):
+        matrices = {}
+        def sm_eval(node):
+            if not node is self.start:
+                input_nodes = self.input_nodes(node)
+                if len(input_nodes) > 0:
+                    blocks = [matrices[(n,node)] if (n,node) in matrices else matrices[(n,None)] for n in input_nodes]
+                    m = max([x.shape[1] for x in blocks])
+                    blocks = [x if x.shape[1] > 0 else scipy.sparse.dok_matrix((x.shape[0],m), dtype=np.float32) for x in blocks]
+                    im = scipy.sparse.vstack(blocks)
+                else:
+                    im = None
+            else:
+                im = None
+
+            on = self.output_nodes(node) if not node is self.end else []
+            #if len(on) > 1 and type(node) == split:
+            if type(node) == split:
+                for o in on:
+                    sm = node.sparse_matrix(output_node = o)
+                    matrices[(node,o)] = sm.dot(im) if not im is None else sm
+            else:
+                o = None
+                sm = node.sparse_matrix()
+                matrices[(node,o)] = sm.dot(im) if not im is None else sm
+
+        self.traverse_graph(sm_eval, True)
+        return matrices[(self.end,None)]
 
     def traverse_graph(self, node_fn, forward):
         """Traverse the graph and apply the given function at each node.
@@ -383,7 +413,7 @@ class CompGraph(object):
             offset = self.var_info[var.uuid]
             var.value = np.reshape(val[offset:offset + var.size], var.shape)
             offset += var.size
-            
+
     def x0(self):
         res = np.zeros(self.input_size)
         for var in self.orig_end.variables():
@@ -391,7 +421,7 @@ class CompGraph(object):
                 offset = self.var_info[var.uuid]
                 res[offset:offset + var.size] = np.ravel(var.initval)
         return res
-    
+
     def __str__(self):
         return self.__class__.__name__
 
