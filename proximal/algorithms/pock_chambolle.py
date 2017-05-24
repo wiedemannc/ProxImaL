@@ -164,6 +164,13 @@ def solve(psi_fns, omega_fns, tau=None, sigma=None, theta=None,
         else:
             L = est_CompGraph_norm(K, try_fast_norm)
 
+    if len(omega_fns) >= 1:
+        assert len(omega_fns) == 1
+        assert len(omega_fns[0].lin_op.variables()) == 1
+        v = omega_fns[0].lin_op.variables()[0]
+        offset = K.var_info[v.uuid]
+        omega_slc = slice(offset, offset + omega_fns[0].lin_op.size, None)
+
     # Initialize
     x = adapter.zeros(K.input_size)
     y = adapter.zeros(K.output_size)
@@ -282,9 +289,9 @@ def solve(psi_fns, omega_fns, tau=None, sigma=None, theta=None,
         if len(omega_fns) > 0:
             fn = omega_fns[0]
             prox_log_tot[fn].tic()
-            xtmp = adapter.reshape(x, fn.lin_op.shape)
+            xtmp = adapter.reshape(x[omega_slc], fn.lin_op.shape)
             prox_log[fn].tic()
-            x[:] = adapter.flatten( prox(fn, adapter.scalar(1.0) / ctau, xtmp, x_init=prev_x,
+            x[omega_slc] = adapter.flatten( prox(fn, adapter.scalar(1.0) / ctau[omega_slc], xtmp, x_init=prev_x,
                                      lin_solver=lin_solver, options=lin_solver_options) )
             prox_log[fn].toc()
             prox_log_tot[fn].toc()

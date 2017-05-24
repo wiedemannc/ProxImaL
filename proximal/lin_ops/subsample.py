@@ -255,7 +255,9 @@ if(%(newlinidx)s >= 0)
     def is_gram_diag(self, freq=False):
         """Is the lin op's Gram matrix diagonal (in the frequency domain)?
         """
-        return not freq and self.input_nodes[0].is_diag(freq)
+        res = not freq and self.input_nodes[0].is_diag(freq)
+        print("uneven_subsample:is_gram_diag", freq, self.input_nodes[0].is_diag(freq), "->", res)
+        return res
 
     def get_diag(self, freq=False):
         """Returns the diagonal representation (A^TA)^(1/2).

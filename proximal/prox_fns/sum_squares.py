@@ -166,8 +166,8 @@ class least_squares(sum_squares):
     def _eval(self, v):
         """Evaluate the function on v (ignoring parameters).
         """
-        Kv = np.zeros(self.K.output_size)
-        self.K.forward(v.ravel(), Kv)
+        Kv = np.zeros(self.K.end.shape)
+        self.K.forward(np.reshape(v, self.K.start.shape), Kv)
         return super(least_squares, self)._eval(Kv - self.offset)
 
     def solve(self, b, rho=None, v=None, lin_solver="lsqr", *args, **kwargs):
@@ -294,7 +294,7 @@ class least_squares(sum_squares):
     def solve_cg(self, b, rho=None, v=None, x_init=None, options=None):
         """Solve ||K*x - b||^2_2 + (rho/2)||x-v||_2^2.
         """
-        output_data = np.zeros(self.K.output_size)
+        output_data = np.zeros(self.K.end.shape)
 
         def KtK(x, r):
             self.K.forward(x, output_data)

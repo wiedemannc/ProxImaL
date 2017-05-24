@@ -121,9 +121,14 @@ class Problem(object):
         elif solver in NAME_TO_SOLVER:
             module = NAME_TO_SOLVER[solver]
             if len(self.omega_fns + self.psi_fns) == 0:
-                if self.try_split and len(prox_fns) > 1 and len(self.variables()) == 1:
+                if self.try_split and len(prox_fns) > 1: # and len(self.variables()) == 1:
                     psi_fns, omega_fns = module.partition(prox_fns,
                                                           self.try_diagonalize)
+                    if show_graph:
+                        print("Psi functions: ")
+                        graph_visualize(psi_fns, filename = show_graph if type(show_graph) is str else None)
+                        print("Omega functions: ")
+                        graph_visualize(omega_fns, filename = show_graph if type(show_graph) is str else None)
                 else:
                     psi_fns = prox_fns
                     omega_fns = []
