@@ -4,7 +4,7 @@ from proximal.tests.base_test import BaseTest
 
 from proximal.lin_ops.vstack import vstack
 from proximal.lin_ops.variable import Variable
-from proximal.lin_ops.subsample import subsample, uneven_subsample
+from proximal.lin_ops.subsample import subsample, uneven_subsample, uneven_subsample_float
 from proximal.lin_ops.comp_graph import CompGraph
 from proximal.lin_ops.conv_nofft import conv_nofft
 from proximal.lin_ops.grad import grad
@@ -130,6 +130,21 @@ class TestCudaCompGraphs(BaseTest):
         idx[0] *= 2
         idx[1] *= 4
         self._generic_check_adjoint(lambda x: uneven_subsample(x, idx), (10,10), (5,3), "uneven_subsample", in_out_sample = (fin,fout,ain,aout))
+
+    def test_uneven_subsample_float(self):
+        fin = np.array([[1,2],[3,4]])
+        ain = np.array( [4] )
+
+        idx = np.array([[0.5], [0.5]])
+        fout = np.array([(1.5+3.5)*0.5])
+        aout = np.array([[1,1],[1,1]])
+        self._generic_check_adjoint(lambda x: uneven_subsample_float(x, idx), (2,2), (1,1), "uneven_subsample_float", in_out_sample=(fin,fout,ain,aout))
+
+        idx = np.array([[0.25], [0.25]])
+        fout = np.array([1.25*0.75+3.25*0.25])
+        aout = np.array([[0.75*0.75,0.25*0.75],[0.25*0.75,0.25*0.25]])*4
+        self._generic_check_adjoint(lambda x: uneven_subsample_float(x, idx), (2,2), (1,1), "uneven_subsample_float", in_out_sample=(fin,fout,ain,aout))
+
 
     def test_uneven_subsample2(self):
         # check out of range indices
@@ -380,6 +395,6 @@ if __name__ == "__main__":
     import logging
     logging.getLogger().setLevel(logging.INFO)
     t = TestCudaCompGraphs()
-    t.test_mulelemwise()
+    t.test_uneven_subsample_float()
     import unittest
     unittest.main()

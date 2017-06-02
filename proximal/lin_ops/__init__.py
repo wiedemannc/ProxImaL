@@ -5,7 +5,7 @@ from .constant import Constant
 from .comp_graph import CompGraph, est_CompGraph_norm
 from .mul_elemwise import mul_elemwise
 from .scale import scale
-from .subsample import subsample, uneven_subsample
+from .subsample import subsample, uneven_subsample, uneven_subsample_float
 from .pxwise_matrixmult import pxwise_matrixmult
 from .sum import sum, copy
 from .variable import Variable

@@ -256,7 +256,7 @@ if(%(newlinidx)s >= 0)
         """Is the lin op's Gram matrix diagonal (in the frequency domain)?
         """
         res = not freq and self.input_nodes[0].is_diag(freq)
-        print("uneven_subsample:is_gram_diag", freq, self.input_nodes[0].is_diag(freq), "->", res)
+        #print("uneven_subsample:is_gram_diag", freq, self.input_nodes[0].is_diag(freq), "->", res)
         return res
 
     def get_diag(self, freq=False):
@@ -294,3 +294,38 @@ if(%(newlinidx)s >= 0)
             Magnitude of outputs.
         """
         return input_mags[0]
+
+def uneven_subsample_float(arg, indices):
+    """
+    Linear interpolation operator
+    """
+    from .mul_elemwise import mul_elemwise
+    float_dims = []
+    for d in range(indices.shape[0]):
+        if np.any(indices[d] - np.floor(indices[d]) > 0.0):
+            float_dims.append(d)
+    if len(float_dims) == 0:
+        return uneven_subsample(arg, indices.astype(np.int32))
+    # at least one float dimension detected
+    def binaries(n):
+        for i in range(2**n):
+            yield [(i >> k) & 1 for k in range(n)]
+    res = None
+    baseidx = np.floor(indices).astype(np.int32)
+    Wf = [indices[i] - np.floor(indices[i]) for i in float_dims]
+    for br in binaries(len(float_dims)):
+        idx = baseidx.copy()
+        W = np.ones(indices.shape[1:])
+        for d,v in enumerate(br):
+            if v:
+                idx[float_dims[d]] += 1
+                W *= Wf[d]
+            else:
+                W *= (1-Wf[d])
+        s = mul_elemwise(W,uneven_subsample(arg, idx))
+
+        if res is None:
+            res = s
+        else:
+            res = res + s
+    return res
