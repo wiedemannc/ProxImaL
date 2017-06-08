@@ -13,31 +13,92 @@ class PCUniformConvexGorF:
     """This class can be used to implement algorithm 2 of the Pock Chambolle
     paper for 1/N^2 convergence rate if either Psi or Omega is uniformly convex.
     """
-    def __init__(self, gamma, tau0):
+    def __init__(self, gamma, tau0, L = None, try_fast_norm = False):
         self._lastIt = 0
         self._gamma = gamma
         self._tau = tau0
-        self._theta = 1.0 / np.sqrt(1 + 2*gamma*tau0)
+        self._theta = 1.0 / np.sqrt(1 + gamma*tau0)
+        self._L = L
+        self._try_fast_norm = try_fast_norm
 
-    def _recalculate(self, it, L):
+    def L(self, K):
+        if self._L is None:
+            self._L = est_CompGraph_norm(K, self._try_fast_norm)
+        return self._L
+
+    def _recalculate(self, it, K):
         self._lastIt = it
         self._tau = self._theta*self._tau
-        self._theta = 1.0 / np.sqrt(1 + 2*self._gamma*self._tau)
+        self._theta = 1.0 / np.sqrt(1 + self._gamma*self._tau)
 
-    def tau(self, it, L):
+    def tau(self, it, K, adapter):
         if self._lastIt != it:
-            self._recalculate(it,L)
-        return self._tau
+            self._recalculate(it,K)
+        return adapter.scalar(self._tau)
 
-    def sigma(self, it, L):
+    def sigma(self, it, K, adapter):
         if self._lastIt != it:
-            self._recalculate(it,L)
-        return 1.0/((L**2)*self._tau)
+            self._recalculate(it,K)
+        return adapter.scalar(1.0/((self.L(K)**2)*self._tau))
 
-    def theta(self, it, L):
+    def theta(self, it, K, adapter):
         if self._lastIt != it:
-            self._recalculate(it,L)
-        return self._theta
+            self._recalculate(it,KL)
+        return adapter.scalar(self._theta)
+
+class PCUniformConvexGorF_PPD:
+    def __init__(self, gamma, tau0, ppd_alpha = 1.):
+        self._lastIt = 0
+        self._gamma = gamma
+        self._tau = tau0
+        self._theta = 1.0 / np.sqrt(1 + gamma*tau0)
+        self._vtau = None
+        self._vsigma = None
+        self._ppd_alpha = ppd_alpha
+        self._wrotenote = False
+
+    def ppd(self, K, adapter):
+        if self._vtau is None:
+            sm = K.sparse_matrix()
+            # abs(K)
+            # alpha = 1:
+            sm = sm.maximum(-sm) # assume sm is real and take absolute value of individual entries
+            self._vsigma = adapter.zeros(K.output_size)
+            self._vtau = adapter.zeros(K.input_size)
+            if self._ppd_alpha == 1:
+                self._vsigma[:] = adapter.scalar(1.)/np.maximum(sm.dot(np.ones(sm.shape[1], dtype=np.float32)),adapter.scalar(1e-5))
+                self._vtau[:] = adapter.scalar(1.)/np.maximum(sm.T.dot(np.ones(sm.shape[0], dtype=np.float32)),adapter.scalar(1e-5))
+            else:
+                self._vsigma[:] = adapter.scalar(1.)/np.maximum(sm.power(self._ppd_alpha).dot(np.ones(sm.shape[1], dtype=np.float32)),adapter.scalar(1e-5))
+                self._vtau[:] = adapter.scalar(1.)/np.maximum(sm.power(2-self._ppd_alpha).T.dot(np.ones(sm.shape[0], dtype=np.float32)),adapter.scalar(1e-5))
+        return self._vsigma, self._vtau
+
+    def _recalculate(self, it, K):
+        self._lastIt = it
+        if self._tau > 1e-3:
+            self._tau = self._theta*self._tau
+            self._theta = 1.0 / np.sqrt(1 + self._gamma*self._tau)
+        else:
+            if not self._wrotenote:
+                print("it=%d: Stopping with acceleration." % it)
+            self._wrotenote = True
+
+    def tau(self, it, K, adapter):
+        if self._lastIt != it:
+            self._recalculate(it, K)
+        vsigma, vtau = self.ppd(K, adapter)
+        return adapter.scalar(self._tau)*vtau
+
+    def sigma(self, it, K, adapter):
+        if self._lastIt != it:
+            self._recalculate(it, K)
+        vsigma, vtau = self.ppd(K, adapter)
+        return adapter.scalar(1./self._tau)*vsigma
+
+    def theta(self, it, K, adapter):
+        if self._lastIt != it:
+            self._recalculate(it, K)
+        return adapter.scalar(self._theta)
 
 def partition(prox_fns, try_diagonalize=True):
     """Divide the proxable functions into sets Psi and Omega.
@@ -159,10 +220,11 @@ def solve(psi_fns, omega_fns, tau=None, sigma=None, theta=None,
             #plt.plot(sigma); plt.show()
             #xxx
     elif callable(tau) or callable(sigma) or callable(theta):
-        if scaled:
-            L = 1
-        else:
-            L = est_CompGraph_norm(K, try_fast_norm)
+        pass
+        #if scaled:
+        #    L = 1
+        #else:
+        #    L = est_CompGraph_norm(K, try_fast_norm)
 
     if len(omega_fns) >= 1:
         assert len(omega_fns) == 1
@@ -230,15 +292,15 @@ def solve(psi_fns, omega_fns, tau=None, sigma=None, theta=None,
             convlog.tic()
 
         if callable(sigma):
-            csigma = sigma(i, L)
+            csigma = sigma(i, K, adapter)
         else:
             csigma = sigma
         if callable(tau):
-            ctau = tau(i, L)
+            ctau = tau(i, K, adapter)
         else:
             ctau = tau
         if callable(theta):
-            ctheta = theta(i, L)
+            ctheta = theta(i, K, adapter)
         else:
             ctheta = theta
         if not ppd:
