@@ -1,16 +1,17 @@
+import functools
 from ctypes import *
 import numpy as np
 from pycuda import gpuarray
 import pycuda.autoinit
 
 class NppiSize(Structure):
-    _fields_ = [("width", c_int32), 
-                ("height", c_int32), 
+    _fields_ = [("width", c_int32),
+                ("height", c_int32),
                 ]
 
 class NppiPoint(Structure):
-    _fields_ = [("x", c_int32), 
-                ("y", c_int32), 
+    _fields_ = [("x", c_int32),
+                ("y", c_int32),
                 ]
 
 NppStatus = c_int32
@@ -18,17 +19,23 @@ NppStatus = c_int32
 nppi = cdll.LoadLibrary("libnppi.so")
 nppi.nppiFilter_32f_C1R.argtypes = [POINTER(c_float), c_int32, POINTER(c_float), c_int32, NppiSize, POINTER(c_float), NppiSize, NppiPoint]
 nppi.nppiFilter_32f_C1R.restype = NppStatus
+nppi.nppiFilter_32f_C2R.argtypes = [POINTER(c_float), c_int32, POINTER(c_float), c_int32, NppiSize, POINTER(c_float), NppiSize, NppiPoint]
+nppi.nppiFilter_32f_C2R.restype = NppStatus
+nppi.nppiFilter_32f_C3R.argtypes = [POINTER(c_float), c_int32, POINTER(c_float), c_int32, NppiSize, POINTER(c_float), NppiSize, NppiPoint]
+nppi.nppiFilter_32f_C3R.restype = NppStatus
+nppi.nppiFilter_32f_C4R.argtypes = [POINTER(c_float), c_int32, POINTER(c_float), c_int32, NppiSize, POINTER(c_float), NppiSize, NppiPoint]
+nppi.nppiFilter_32f_C4R.restype = NppStatus
 
 def nppiFilter(src, kernel, roi = None, dst = None):
     if len(src.shape) < 2 or len(src.shape) > 3 or (len(src.shape) == 3 and src.shape[-1] > 4):
         raise RuntimeError("Only 2D convolution supported")
     if len(kernel.shape) < 2 or len(kernel.shape) > 3 or (len(kernel.shape) == 3 and kernel.shape[-1] != 1):
         raise RuntimeError("Only 2D convolution supported")
-    
+
     if roi is None:
         # x,y,width,height
         roi = [0,0,src.shape[1],src.shape[0]]
-        
+
     if src.dtype == np.float32 and kernel.dtype == np.float32:
         if dst is None:
             dst = gpuarray.zeros(src.shape, src.dtype)
@@ -36,9 +43,9 @@ def nppiFilter(src, kernel, roi = None, dst = None):
             raise RuntimeError("Unsupported destination image.")
         srcp = int(src.gpudata)
         dstp = int(dst.gpudata)
-        
+
         es = 4
-        
+
         if len(src.shape) == 2 or (len(src.shape) == 3 and src.shape[-1] == 1):
             nppfunc = nppi.nppiFilter_32f_C1R
             srcp += (roi[0] + roi[1]*src.shape[1])*es
@@ -58,28 +65,28 @@ def nppiFilter(src, kernel, roi = None, dst = None):
             elif src.shape[-1] == 4:
                 nppfunc = nppi.nppiFilter_32f_C4R
             else:
-                raise RuntgimeError("Not supported")
-        
+                raise RuntimeError("Not implemented.")
+
         oSizeROI = NppiSize()
         oSizeROI.width = roi[2]
         oSizeROI.height = roi[3]
-        
+
         kernelp = int(kernel.gpudata)
         kernelSize = NppiSize()
         kernelSize.width = kernel.shape[1]
         kernelSize.height = kernel.shape[0]
-        
+
         anchor = NppiPoint()
         anchor.x = kernel.shape[1]//2
         anchor.y = kernel.shape[0]//2
-        
+
         status = nppfunc(cast(srcp, POINTER(c_float)), src_step, cast(dstp, POINTER(c_float)), dst_step, oSizeROI, cast(kernelp, POINTER(c_float)), kernelSize, anchor)
         if status < 0:
             raise RuntimeError("Npp library returned %d" % status)
         return dst
-    
+
     raise RuntimeError("Not supported")
-    
+
 if __name__ == "__main__":
     src = gpuarray.to_gpu(np.reshape(np.arange(100, dtype=np.float32), (10,10)))
     kernel = gpuarray.to_gpu( np.array([[-1, 0, 1]], dtype=np.float32 ))
@@ -91,4 +98,9 @@ if __name__ == "__main__":
     dst = nppiFilter(src, kernel, roi = [1,1,8,8])
     print(dst[:,:,0])
     print(dst[:,:,1])
-    
+
+    for i in range(1000):
+        src = gpuarray.to_gpu(np.random.randn(320,240,2).astype(np.float32))
+        kernel = gpuarray.to_gpu( np.random.randn(5,5,1).astype(np.float32))
+        dst = gpuarray.zeros((320,240,2), dtype=np.float32)
+        dst = nppiFilter(src, kernel, [2,2,236,316], dst)

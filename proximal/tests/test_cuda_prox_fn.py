@@ -2,6 +2,7 @@ from proximal.tests.base_test import BaseTest
 
 from proximal.prox_fns.group_norm1 import group_norm1
 from proximal.lin_ops.variable import Variable
+from proximal.utils.cuda_codegen import PyCudaAdapter
 
 from numpy import random
 import numpy as np
@@ -16,7 +17,8 @@ class TestCudaProxFn(BaseTest):
         
         v = np.reshape(np.arange(10*10*2*3), (10,10,2,3)).astype(np.float32)
         xhat1 = f.prox(1, v.copy())
-        xhat2 = f.prox_cuda(1, v.copy()).get()
+        adapter = PyCudaAdapter()
+        xhat2 = f.prox_cuda(adapter, 1, v.copy()).get()
         
         if not np.all(np.abs(xhat1 - xhat2) < 1e-4):
             print(f.cuda_code)
@@ -29,7 +31,7 @@ class TestCudaProxFn(BaseTest):
             v = random.rand(10,10,2,3).astype(np.float32)
             rho = np.abs(random.rand(1))
             xhat1 = f.prox(rho, v.copy())
-            xhat2 = f.prox_cuda(rho, v.copy()).get()
+            xhat2 = f.prox_cuda(adapter, rho, v.copy()).get()
             
             err = np.amax(np.abs(xhat1 - xhat2))
             if not err < eps:
@@ -48,7 +50,7 @@ class TestCudaProxFn(BaseTest):
             b = np.abs(random.rand(*f.b.shape))
             
             xhat1 = f.prox(rho, v.copy(), alpha=alpha, beta=beta, gamma=gamma, c=c, b=b)
-            xhat2 = f.prox_cuda(rho, v.copy()).get()
+            xhat2 = f.prox_cuda(adapter, rho, v.copy()).get()
             
             err = np.amax(np.abs(xhat1 - xhat2))
             if not err < eps:

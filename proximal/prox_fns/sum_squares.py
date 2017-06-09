@@ -25,10 +25,10 @@ class sum_squares(ProxFn):
         return v
 
     def _cuda_kernel_available(self):
-        return False
+        return True
 
     def _prox_cuda(self, rho, gen_v, subidx, linidx, res):
-        v = gen_v([linidx]);
+        v = gen_v([linidx])
         code = """/*sum_squares*/
 float %(res)s = 0.0f;
 %(res)s = %(rho)s / (2.f + %(rho)s);
@@ -69,6 +69,9 @@ class weighted_sum_squares(sum_squares):
             rho_vec = rho / np.square(self.weight[self.weight != 0])
         v[self.weight != 0] *= rho_vec / (2 + rho_vec)
         return v
+
+    def _cuda_kernel_available(self):
+        return True
 
     def cuda_additional_buffers(self):
         res = super(weighted_sum_squares, self).cuda_additional_buffers()

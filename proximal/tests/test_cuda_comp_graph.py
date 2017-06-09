@@ -17,6 +17,7 @@ from proximal.lin_ops.pxwise_matrixmult import pxwise_matrixmult
 from pycuda import gpuarray
 
 import functools
+import logging
 import time
 
 from numpy import random
@@ -392,7 +393,6 @@ class TestCudaCompGraphs(BaseTest):
         #print( G.start.adjoint_cuda(G, 0, "i", None)[0] )
 
 if __name__ == "__main__":
-    import logging
     logging.getLogger().setLevel(logging.INFO)
     t = TestCudaCompGraphs()
     t.test_uneven_subsample_float()

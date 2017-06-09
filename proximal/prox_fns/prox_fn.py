@@ -41,6 +41,10 @@ class ProxFn(object):
         self.d = float(d)
         self.init_tmps()
         self.kernel_cuda_prox = None
+        self._rho_hat = None
+        self._xhat = None
+        self._bgpu = None
+        self._cgpu = None
         super(ProxFn, self).__init__()
 
     def set_implementation(self, im):
@@ -131,9 +135,9 @@ class ProxFn(object):
         idxvars = ["subidx%d" % d for d in range(len(shape))]
         ind2subcode = ind2subCode("vidx", shape, idxvars)
 
-        v_divisor = "float vDiv = 1.f / (rho%(plus_2gamma)s%(bcode1)s);\n" % locals()
+        v_divisor = "float vDiv = 1.f / (rho%(plus_2gamma)s);\n" % locals()
 
-        gen_v = lambda idx: "(((v[%(idx)s] * rho)%(ccode)s)%(mul_beta)s)*vDiv" % dict(
+        gen_v = lambda idx: "(((v[%(idx)s] * rho)%(ccode)s)%(mul_beta)s)*vDiv%(bcode1)s" % dict(
                     idx=sub2ind(idx, shape) if len(idx) > 1 else idx[0],
                     ccode=ccode % locals(),
                     mul_beta=mul_beta,
@@ -184,7 +188,7 @@ __global__ void prox(const float *v, float *xhat, float rho %(argstring)s)
 }
 """ % locals()
 
-        gen_vppd = lambda idx: "(((v[%(idx)s] * rho[vidx])%(ccode)s)%(mul_beta)s)*vDiv" % dict(
+        gen_vppd = lambda idx: "(((v[%(idx)s] * rho[vidx])%(ccode)s)%(mul_beta)s)*vDiv%(bcode1)s" % dict(
                     idx=sub2ind(idx, shape) if len(idx) > 1 else idx[0],
                     ccode=ccode % locals(),
                     mul_beta=mul_beta,
@@ -245,7 +249,7 @@ __global__ void prox_ppd(const float *v, float *xhat, const float *rho %(argstri
     def _cuda_kernel_available(self):
         return hasattr(self, "_prox_cuda")
 
-    def prox_cuda(self, rho, v, *args, **kwargs):
+    def prox_cuda(self, adapter, rho, v, *args, **kwargs):
         if hasattr(rho, "shape") and len(rho.shape) > 0 and rho.shape[0] > 1:
             ppd = True
         else:
@@ -255,7 +259,9 @@ __global__ void prox_ppd(const float *v, float *xhat, const float *rho %(argstri
                 self.gen_cuda_code()
             if not type(v) == gpuarray.GPUArray:
                 v = gpuarray.to_gpu(v.astype(np.float32))
-            xhat = gpuarray.zeros(v.shape, dtype=np.float32)
+            if self._xhat is None:
+                self._xhat = gpuarray.zeros(v.shape, dtype=np.float32)
+            xhat = self._xhat
             if not ppd:
                 kernel_cuda_prox_off_and_fac = self.kernel_cuda_prox_off_and_fac
                 kernel_cuda_prox = self.kernel_cuda_prox
@@ -272,23 +278,51 @@ __global__ void prox_ppd(const float *v, float *xhat, const float *rho %(argstri
                 kernel_cuda_prox(v, xhat, rho)
             return xhat
         else:
-            c = gpuarray.to_gpu(self.c)
-            b = gpuarray.to_gpu(self.b)
+            if self._xhat is None:
+                self._xhat = gpuarray.zeros(v.shape, dtype=np.float32)
+            if self._cgpu is None:
+                self._cgpu = gpuarray.to_gpu(self.c.astype(np.float32))
+            if self._bgpu is None:
+                self._bgpu = gpuarray.to_gpu(self.b.astype(np.float32))
+            c = self._cgpu
+            b = self._bgpu
             cuda_fun = lambda rho, v, *args, **kw: gpuarray.to_gpu(self._prox(rho.get() if ppd else rho, v.get(), *args, **kw).astype(np.float32()))
-            rho_hat = (rho + 2 * self.gamma) / (self.alpha * self.beta**2)
+
+            gamma = adapter.scalar(self.gamma)
+            beta = adapter.scalar(self.beta)
+            alpha = adapter.scalar(self.alpha)
+
+            if type(rho) is adapter.arraytype():
+                if self._rho_hat is None:
+                    self._rho_hat = gpuarray.zeros(rho.shape, dtype=np.float32)
+                rho_hat = self._rho_hat
+                adapter.elem_wise_wrapper("rho_hat = (rho + 2.f * gamma) / (alpha * beta * beta)", (("rho_hat",rho_hat),("rho",rho),("gamma",gamma),("alpha",alpha),("beta",beta)))
+            else:
+                rho_hat = (rho + 2 * self.gamma) / (self.alpha * self.beta**2)
+
             # vhat = (rho*v - c)*beta/(rho + 2*gamma) - b
             # Modify v in-place. This is important for the Python to be performant.
-            v *= rho
-            v -= c
-            v *= self.beta / (rho + 2 * self.gamma)
-            v -= b
+            xhat = self._xhat
+            adapter.elem_wise_wrapper("v = (v*rho - c)*beta / (rho + 2.f*gamma) - b", (("v",v),("rho",rho), ("c",c), ("beta",beta), ("gamma",gamma), ("b",b)))
+            #v *= rho
+            #v -= c
+            #v *= self.beta / (rho + 2 * self.gamma)
+            #v -= b
+            #print(np.amax(np.abs((test - v).get())), test.get().flatten()[65], v.get().flatten()[65], rho.shape, v.shape)
             xhat = cuda_fun(rho_hat, v, *args, **kwargs)
+
+            if "offset" in kwargs:
+                offset = kwargs["offset"]
+                factor = kwargs.get("factor", adapter.scalar(1))
+                adapter.elem_wise_wrapper("xhat = ((xhat + b)/beta)*factor + offset", (("xhat",xhat),("b",b),("beta",beta),("factor",factor),("offset",offset)))
+            else:
+                adapter.elem_wise_wrapper("xhat = ((xhat + b)/beta)", (("xhat",xhat),("b",b),("beta",beta)))
             # x = (xhat + b)/beta
             # Modify result in-place.
-            xhat += b
-            xhat /= self.beta
-            if "offset" in kwargs:
-                xhat = kwargs["offset"] + kwargs.get("factor",1) * xhat
+            #xhat += b
+            #xhat /= self.beta
+            #if "offset" in kwargs:
+            #    xhat = kwargs["offset"] + kwargs.get("factor",1) * xhat
             return xhat
 
     @abc.abstractmethod

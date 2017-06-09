@@ -43,7 +43,7 @@ class PCUniformConvexGorF:
 
     def theta(self, it, K, adapter):
         if self._lastIt != it:
-            self._recalculate(it,KL)
+            self._recalculate(it,K)
         return adapter.scalar(self._theta)
 
 class PCUniformConvexGorF_PPD:
@@ -180,16 +180,25 @@ def solve(psi_fns, omega_fns, tau=None, sigma=None, theta=None,
         K_adjoint = K.adjoint
         prox_off_and_fac = lambda offset, factor, fn, *args, **kw: offset + factor*fn.prox(*args, **kw)
         prox = lambda fn, *args, **kw: fn.prox(*args, **kw)
+
     elif adapter.implem() == 'pycuda':
         K_forward = K.forward_cuda
         K_adjoint = K.adjoint_cuda
-        prox_off_and_fac = lambda offset, factor, fn, *args, **kw: fn.prox_cuda(*args, **kw, offset=offset, factor=factor)
-        prox = lambda fn, *args, **kw: fn.prox_cuda(*args, **kw)
+        prox_off_and_fac = lambda offset, factor, fn, *args, **kw: fn.prox_cuda(adapter, *args, **kw, offset=offset, factor=factor)
+        prox = lambda fn, *args, **kw: fn.prox_cuda(adapter, *args, **kw)
+
         if not cuda_code_file is None:
             K.gen_cuda_code()
             open(cuda_code_file, "w").write("/* CUDA FORWARD IMPLEMENTAIOTN */\n" + K.cuda_forward_subgraphs.cuda_code + "\n/*CUDA ADJOINT IMPLEMENTAIOTN */" + K.cuda_adjoint_subgraphs.cuda_code)
+
     else:
         raise RuntimeError("Implementation %s unknown" % adapter.implem())
+
+    z_eq_a_plus_b_times_c = lambda z,a,b,c: adapter.elem_wise_wrapper("z = a+b*c", (("a",a),("b",b),("c",c),("z",z)))
+    z_eq_m_a = lambda z,a: adapter.elem_wise_wrapper("z = -a", (("a",a), ("z",z)))
+    z_eq_a_div_b = lambda z,a,b: adapter.elem_wise_wrapper("z = a/b", (("a",a),("b",b),("z",z)))
+    z_eq_z_minus_a_times_b = lambda z,a,b: adapter.elem_wise_wrapper("z = z - a*b", (("a",a),("b",b),("z",z)))
+    z_eq_z_plus_a_times_b_minus_c = lambda z,a,b,c: adapter.elem_wise_wrapper("z = z + a*(b-c)", (("a",a),("b",b),("c",c),("z",z)))
 
     # Select optimal parameters if wanted
     if tau is None or sigma is None or theta is None:
@@ -228,10 +237,12 @@ def solve(psi_fns, omega_fns, tau=None, sigma=None, theta=None,
 
     if len(omega_fns) >= 1:
         assert len(omega_fns) == 1
-        assert len(omega_fns[0].lin_op.variables()) == 1
-        v = omega_fns[0].lin_op.variables()[0]
-        offset = K.var_info[v.uuid]
-        omega_slc = slice(offset, offset + omega_fns[0].lin_op.size, None)
+        if len(omega_fns[0].lin_op.variables()) == 1:
+            v = omega_fns[0].lin_op.variables()[0]
+            offset = K.var_info[v.uuid]
+            omega_slc = slice(offset, offset + omega_fns[0].lin_op.size, None)
+        else:
+            omega_slc = slice(0, K.output_size, None)
 
     # Initialize
     x = adapter.zeros(K.input_size)
@@ -303,10 +314,10 @@ def solve(psi_fns, omega_fns, tau=None, sigma=None, theta=None,
             ctheta = theta(i, K, adapter)
         else:
             ctheta = theta
-        if not ppd:
-            csigma = adapter.scalar(csigma)
-            ctau = adapter.scalar(ctau)
-            ctheta = adapter.scalar(ctheta)
+
+        if not type(csigma) is adapter.arraytype(): csigma = adapter.scalar(csigma)
+        if not type(ctau)   is adapter.arraytype(): ctau   = adapter.scalar(ctau)
+        if not type(ctheta) is adapter.arraytype(): ctheta = adapter.scalar(ctheta)
 
         # Keep track of previous iterates
         iter_timing["copyprev"].tic()
@@ -319,10 +330,22 @@ def solve(psi_fns, omega_fns, tau=None, sigma=None, theta=None,
         # Compute z
         iter_timing["calcz"].tic()
         K_forward(xbar, Kxbar)
-        z = y + csigma * Kxbar
+        #z = y + csigma * Kxbar
+        z_eq_a_plus_b_times_c(z,y,csigma,Kxbar)
         iter_timing["calcz"].toc()
 
         # Update y.
+        if i == 0:
+            z_div_csigma = adapter.zeros(z.shape)
+        if type(csigma) is adapter.arraytype():
+            if i == 0:
+                m_csigma = adapter.zeros(csigma.shape)
+            z_eq_m_a(m_csigma, csigma)
+        else:
+            m_csigma = -csigma
+
+        z_eq_a_div_b(z_div_csigma, z, csigma)
+
         offset = 0
         for fn in psi_fns:
             prox_log_tot[fn].tic()
@@ -330,11 +353,15 @@ def solve(psi_fns, omega_fns, tau=None, sigma=None, theta=None,
             z_slc = adapter.reshape(z[slc], fn.lin_op.shape)
             if ppd:
                 csigma_slc = adapter.reshape(csigma[slc], fn.lin_op.shape)
+                m_csigma_slc = adapter.reshape(m_csigma[slc], fn.lin_op.shape)
             else:
                 csigma_slc = csigma
+                m_csigma_slc = -csigma
+            z_div_csigma_slc = adapter.reshape(z_div_csigma[slc], fn.lin_op.shape)
+
             # Moreau identity: apply and time prox.
             prox_log[fn].tic()
-            y[slc] = adapter.flatten( prox_off_and_fac(z_slc, -csigma_slc, fn, csigma_slc, z_slc / csigma_slc, i) )
+            y[slc] = adapter.flatten( prox_off_and_fac(z_slc, m_csigma_slc, fn, csigma_slc, z_div_csigma_slc, i) )
             prox_log[fn].toc()
             offset += fn.lin_op.size
             prox_log_tot[fn].toc()
@@ -344,7 +371,8 @@ def solve(psi_fns, omega_fns, tau=None, sigma=None, theta=None,
             y[offset:] = 0
         # Update x
         K_adjoint(y, KTy)
-        x -= ctau * KTy
+        #x -= ctau * KTy
+        z_eq_z_minus_a_times_b(x, ctau, KTy)
         iter_timing["calcx"].toc()
 
         iter_timing["omega_fn"].tic()
@@ -353,7 +381,11 @@ def solve(psi_fns, omega_fns, tau=None, sigma=None, theta=None,
             prox_log_tot[fn].tic()
             xtmp = adapter.reshape(x[omega_slc], fn.lin_op.shape)
             prox_log[fn].tic()
-            x[omega_slc] = adapter.flatten( prox(fn, adapter.scalar(1.0) / ctau[omega_slc], xtmp, x_init=prev_x,
+            if ppd:
+                one_div_ctau = adapter.scalar(1.0) / ctau[omega_slc]
+            else:
+                one_div_ctau = adapter.scalar(1.0) / ctau
+            x[omega_slc] = adapter.flatten( prox(fn, one_div_ctau, xtmp, x_init=prev_x,
                                      lin_solver=lin_solver, options=lin_solver_options) )
             prox_log[fn].toc()
             prox_log_tot[fn].toc()
@@ -362,7 +394,8 @@ def solve(psi_fns, omega_fns, tau=None, sigma=None, theta=None,
         iter_timing["xbar"].tic()
         # Update xbar
         adapter.copyto(xbar, x)
-        xbar += ctheta * (x - prev_x)
+        z_eq_z_plus_a_times_b_minus_c(xbar, ctheta, x, prev_x)
+        #xbar += ctheta * (x - prev_x)
         iter_timing["xbar"].toc()
 
         # Convergence log

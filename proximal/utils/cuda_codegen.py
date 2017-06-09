@@ -7,6 +7,7 @@ try:
     import pycuda.autoinit
     from pycuda.compiler import SourceModule, DEFAULT_NVCC_FLAGS
     from pycuda import gpuarray
+    from pycuda.elementwise import ElementwiseKernel
 
     cuda_available = True
 
@@ -40,6 +41,9 @@ class CudaFunc:
         self.function_name = function_name
 
     def __call__(self, *args):
+        #for a in args + self.additional_arguments:
+        #    if not type(a) is pycuda.gpuarray.GPUArray:
+        #        print(self.func, "using non gpu array input")
         t = self.func(*(args+self.additional_arguments), grid=self.grid, block=self.block, time_kernel=True)
         logging.debug("Cuda function %s execution time: %.2f ms", self.function_name, t*1000)
         return t
@@ -54,6 +58,7 @@ def cuda_function(mod, function_name, datadim, additional_arguments = ()):
     cuda_func = mod.get_function(function_name)
     block = (min(datadim, cuda_func.MAX_THREADS_PER_BLOCK), 1, 1)
     grid = (datadim//block[0],1,1)
+    #print("cuda function: %s, block=%d, grid=%d, MAX=%d" % (function_name, block[0], grid[0], cuda_func.MAX_THREADS_PER_BLOCK))
     return CudaFunc(cuda_func, block, grid, additional_arguments, function_name)
     #result = lambda *args: logger(cuda_func(*(args+additional_arguments), grid=grid, block=block, time_kernel=True))
     #return result
@@ -65,6 +70,7 @@ class NumpyAdapter:
     """
     def __init__(self, floattype = np.float64):
         self.floattype = floattype
+        self.elem_wise_expressions = {}
 
     def zeros(self, *args, **kw):
         kw['dtype'] = self.floattype
@@ -94,6 +100,21 @@ class NumpyAdapter:
     def abs(self, matrix):
         return np.abs(matrix)
 
+    def elem_wise_wrapper(self, expression, variables):
+        """
+        expression must be a string containing a statement like "a = b*c+(-c/s)"
+        """
+        vtypes = tuple([type(vval) for (vname, vval) in variables])
+        if not (expression, vtypes) in self.elem_wise_expressions:
+            sexp = expression.split("=")
+            assert len(sexp) == 2
+            new_exp = "np.copyto(" + sexp[0] + ", " + sexp[1] + ")"
+            self.elem_wise_expressions[(expression, vtypes)] = new_exp
+        exec(self.elem_wise_expressions[(expression, vtypes)], globals(), dict(variables))
+
+    def arraytype(self):
+        return np.ndarray
+
     def implem(self):
         return 'numpy'
 
@@ -104,6 +125,7 @@ class PyCudaAdapter:
     """
     def __init__(self, floattype = np.float32):
         self.floattype = floattype
+        self.elem_wise_expressions = {}
 
     def zeros(self, *args, **kw):
         kw['dtype'] = self.floattype
@@ -132,6 +154,35 @@ class PyCudaAdapter:
 
     def abs(self, matrix):
         return matrix.__abs__()
+
+    def elem_wise_wrapper(self, expression, variables):
+        """
+        expression must be a string containing a statement like "a = b*c+(-c/s)"
+        """
+        vtypes = tuple([type(vval) is self.floattype for (vname, vval) in variables])
+        if not (expression, vtypes) in self.elem_wise_expressions:
+            for _,v in variables:
+                if hasattr(v, "dtype"):
+                    assert v.dtype == self.floattype
+            cexp = expression
+            args = []
+            for vname, vval in variables:
+                if type(vval) is self.floattype:
+                    args.append("float " + vname)
+                else:
+                    args.append("float *" + vname)
+                    cexp = re.sub(r"\b%s\b" % vname, vname + "[i]", cexp)
+            args = ", ".join(args)
+            #print(expression, vtypes, args, cexp)
+            self.elem_wise_expressions[(expression, vtypes)] = ElementwiseKernel(
+                    args,
+                    cexp,
+                    "elem_wise_wrapper"
+                    )
+        self.elem_wise_expressions[(expression, vtypes)](*(vval for (_, vval) in variables))
+
+    def arraytype(self):
+        return gpuarray.GPUArray
 
     def implem(self):
         return 'pycuda'
