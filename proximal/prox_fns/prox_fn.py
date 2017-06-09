@@ -207,7 +207,7 @@ __global__ void prox_ppd_off_and_fac(const float *v, float *xhat, const float *r
     for( int vidx = index; vidx < %(dimv)d; vidx += stride )
     {
         float rho_hat = (rho[vidx] %(plus_2gamma)s)%(div_alpha_beta_s)s;
-        float vDiv = 1.f / (rho[vidx] %(plus_2gamma)s%(bcode1)s);
+        float vDiv = 1.f / (rho[vidx] %(plus_2gamma)s);
 
         %(ind2subcode)s
         %(cucode_ppd)s
@@ -225,7 +225,7 @@ __global__ void prox_ppd(const float *v, float *xhat, const float *rho %(argstri
     for( int vidx = index; vidx < %(dimv)d; vidx += stride )
     {
         float rho_hat = (rho[vidx] %(plus_2gamma)s)%(div_alpha_beta_s)s;
-        float vDiv = 1.f / (rho[vidx] %(plus_2gamma)s%(bcode1)s);
+        float vDiv = 1.f / (rho[vidx] %(plus_2gamma)s);
 
         %(ind2subcode)s
         %(cucode_ppd)s
@@ -268,6 +268,8 @@ __global__ void prox_ppd(const float *v, float *xhat, const float *rho %(argstri
                 rho = np.float32(rho)
                 factor = np.float32(kwargs.get("factor", 1))
             else:
+                if not type(rho) is gpuarray.GPUArray:
+                    rho = gpuarray.to_gpu(rho.astype(np.float32))
                 kernel_cuda_prox_off_and_fac = self.kernel_ppd_cuda_prox_off_and_fac
                 kernel_cuda_prox = self.kernel_ppd_prox
                 factor = kwargs.get("factor", None)
@@ -276,6 +278,7 @@ __global__ void prox_ppd(const float *v, float *xhat, const float *rho %(argstri
                 kernel_cuda_prox_off_and_fac(v, xhat, rho, kwargs["offset"], factor)
             else:
                 kernel_cuda_prox(v, xhat, rho)
+            assert not np.any(np.isnan(xhat.get()))
             return xhat
         else:
             if self._xhat is None:
