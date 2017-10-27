@@ -36,6 +36,8 @@ class Problem(object):
         if isinstance(prox_fns, ProxFn):
             prox_fns = [prox_fns]
         self.prox_fns = prox_fns
+        if type(implem) == str:
+            implem = Impl[implem]
         self.implem = implem
         self.try_diagonalize = try_diagonalize  # Auto diagonalize?
         self.try_split = try_split  # Auto partition?
@@ -181,9 +183,6 @@ class Problem(object):
                 #print("x=", x)
                 yt = L.forward(x, yt)
 
-                A = L.sparse_matrix()
-                ytt = A.dot(x)
-
                 #print("yt=", yt)
                 #print("x=", x)
                 y = random(L.output_size)
@@ -191,7 +190,12 @@ class Problem(object):
                 xt = np.zeros(L.input_size)
                 xt = L.adjoint(y, xt)
 
-                xtt = A.T.dot(y)
+                try:
+                    A = L.sparse_matrix()
+                    ytt = A.dot(x)
+                    xtt = A.T.dot(y)
+                except NotImplementedError:
+                    pass
                 #print("xt=", xt)
                 #print("y=", y)
                 r = np.abs( np.dot(np.ravel(y), np.ravel(yt)) - np.dot(np.ravel(x), np.ravel(xt)) )

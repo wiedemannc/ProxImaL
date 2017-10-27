@@ -13,7 +13,13 @@ try:
 
 except ImportError:
     cuda_available = False
-
+    class gpuarray:
+        pass
+except Exception as e:
+    import traceback
+    print("Warning: caught exception; continuing without pycuda.")
+    traceback.print_exc()
+    cuda_available = False
     class gpuarray:
         pass
 

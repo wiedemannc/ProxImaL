@@ -46,6 +46,9 @@ class PCUniformConvexGorF:
             self._recalculate(it,K)
         return adapter.scalar(self._theta)
 
+    def tau_last(self):
+        return self._tau
+
 class PCUniformConvexGorF_PPD:
     def __init__(self, gamma, tau0, ppd_alpha = 1.):
         self._lastIt = 0
@@ -99,6 +102,9 @@ class PCUniformConvexGorF_PPD:
         if self._lastIt != it:
             self._recalculate(it, K)
         return adapter.scalar(self._theta)
+
+    def tau_last(self):
+        return self._tau
 
 def partition(prox_fns, try_diagonalize=True):
     """Divide the proxable functions into sets Psi and Omega.

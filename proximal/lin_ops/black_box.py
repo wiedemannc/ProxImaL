@@ -1,7 +1,7 @@
 from .lin_op import LinOp
 
 
-def LinOpFactory(input_shape, output_shape, forward, adjoint, norm_bound=None):
+def LinOpFactory(input_shape, output_shape, forward, adjoint, norm_bound=None, sparse_repr=None):
     """Returns a function to generate a custom LinOp.
 
     Parameters
@@ -19,7 +19,7 @@ def LinOpFactory(input_shape, output_shape, forward, adjoint, norm_bound=None):
     """
     def get_black_box(arg):
         return BlackBox(arg, input_shape, output_shape,
-                        forward, adjoint, norm_bound)
+                        forward, adjoint, norm_bound, sparse_repr)
     return get_black_box
 
 
@@ -28,11 +28,12 @@ class BlackBox(LinOp):
     """
 
     def __init__(self, arg, input_shape, output_shape,
-                 forward, adjoint, norm_bound=None):
+                 forward, adjoint, norm_bound=None, sparse_repr=None):
         assert arg.shape == input_shape
         self._forward = forward
         self._adjoint = adjoint
         self._norm_bound = norm_bound
+        self._sparse_repr = sparse_repr
         super(BlackBox, self).__init__([arg], output_shape)
 
     def forward(self, inputs, outputs):
@@ -48,6 +49,11 @@ class BlackBox(LinOp):
         Reads from inputs and writes to outputs.
         """
         self._adjoint(inputs[0], outputs[0])
+
+    def sparse_matrix(self):
+        if self._sparse_repr is None:
+            return super(BlackBox, self).sparse_matrix()
+        return self._sparse_repr
 
     def norm_bound(self, input_mags):
         """Gives an upper bound on the magnitudes of the outputs given inputs.

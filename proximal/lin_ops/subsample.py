@@ -133,9 +133,10 @@ class uneven_subsample(LinOp):
         subsample(arg2d, (s0,s1))
     """
 
-    def __init__(self, arg, indices):
+    def __init__(self, arg, indices, priority = None):
         indices = np.asarray(indices).astype(np.int32)
         assert(len(arg.shape) == indices.shape[0])
+        assert(priority is None or priority.shape == indices.shape[1:])
         invalid_indices = np.zeros(indices.shape[1:], dtype=np.bool)
         for d in range(len(arg.shape)):
             invalid_indices = np.logical_or(invalid_indices, indices[d] < 0)
@@ -143,7 +144,17 @@ class uneven_subsample(LinOp):
         self.invalid_indices = invalid_indices
         self.valid_indices = np.logical_not(invalid_indices)
         self.linear_indices = np.ravel_multi_index(indices, arg.shape, mode='clip')
+        if not priority is None:
+            un_val, un_idx, un_inv, un_cnt = np.unique(self.linear_indices, return_index=True, return_inverse=True, return_counts=True)
+            for i in np.where(un_cnt > 1)[0]:
+                sel = np.where(self.linear_indices == un_val[i])[0]
+                prio = priority.flatten()[sel]
+                winner = np.argmin(prio)
+                sel = list(sel[:winner]) + list(sel[(winner+1):])
+                self.invalid_indices[sel] = True
+                self.valid_indices[sel] = False
         assert(len(np.unique(self.linear_indices[self.valid_indices])) == np.sum(self.valid_indices))
+
         self.orig_shape = arg.shape
         # for cuda:
         self.indices = indices
