@@ -1,13 +1,14 @@
 from .prox_fn import ProxFn
 import numpy as np
-from scipy.optimize import fmin_l_bfgs_b
-
+import scipy.optimize as opt
 
 class diff_fn(ProxFn):
     """A generic prox operator for differentiable functions using L-BFGS.
     """
 
-    def __init__(self, lin_op, func, fprime, bounds=None, factr=1e7, **kwargs):
+    def __init__(self, lin_op, func, fprime,
+                 minimizer=lambda func, x0, grad_func: opt.fmin_l_bfgs_b(func, x0, grad_func)[0],
+                 **kwargs):
         """Initialization.
 
         Args:
@@ -16,10 +17,9 @@ class diff_fn(ProxFn):
             fprime: A function call for evaluating the derivative.
             bounds: A list of (lower bound, upper bound) on each entry.
         """
+        self.minimizer = minimizer
         self.func = func
         self.fprime = fprime
-        self.bounds = bounds
-        self.factr = factr
         super(diff_fn, self).__init__(lin_op, **kwargs)
 
     def _prox(self, rho, v, *args, **kwargs):
@@ -27,13 +27,12 @@ class diff_fn(ProxFn):
         """
         # Derivative of augmented function.
         def prox_func(x):
-            return self.func(x) + (rho / 2.0) * np.square(x.ravel() - v.ravel()).sum()
+            return self.func(x) + ((rho / 2.0) * np.square(x.ravel() - v.ravel())).sum()
 
         def prox_fprime(x):
             return self.fprime(x).ravel() + rho * (x.ravel() - v.ravel())
 
-        x, f, d = fmin_l_bfgs_b(prox_func, v, prox_fprime,
-                                bounds=self.bounds, factr=self.factr)
+        x = self.minimizer(prox_func, v, prox_fprime)
         return np.reshape(x, self.lin_op.shape)
 
     def _eval(self, v):
@@ -48,4 +47,4 @@ class diff_fn(ProxFn):
         -------
         list
         """
-        return [self.func, self.fprime, self.bounds, self.factr]
+        return [self.func, self.fprime, self.minimizer]

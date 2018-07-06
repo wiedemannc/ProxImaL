@@ -112,7 +112,7 @@ class Problem(object):
 
         if show_graph:
             print("Computational graph before optimizing:")
-            graph_visualize(prox_fns, filename = show_graph if type(show_graph) is str else None)
+            graph_visualize(prox_fns, filename = show_graph + ".pdf" if type(show_graph) is str else None)
 
         # Short circuit with one function.
         if len(prox_fns) == 1 and type(prox_fns[0].lin_op) == Variable:
@@ -128,9 +128,9 @@ class Problem(object):
                                                           self.try_diagonalize)
                     if show_graph:
                         print("Psi functions: ")
-                        graph_visualize(psi_fns, filename = show_graph if type(show_graph) is str else None)
+                        graph_visualize(psi_fns, filename = show_graph + "_psi.pdf" if type(show_graph) is str else None)
                         print("Omega functions: ")
-                        graph_visualize(omega_fns, filename = show_graph if type(show_graph) is str else None)
+                        graph_visualize(omega_fns, filename = show_graph + "_omega.pdf" if type(show_graph) is str else None)
                 else:
                     psi_fns = prox_fns
                     omega_fns = []

@@ -592,6 +592,8 @@ class CudaSubGraph:
             except AttributeError:
                 buffers = []
             for aname, aval in buffers:
+                if aname in [ca[0] for ca in self.cuda_args]:
+                    continue
                 if type(aval) == np.ndarray and aval.dtype == np.int32:
                     aval = gpuarray.to_gpu(aval)
                     self.cuda_args.append( (aname, aval, "int") )

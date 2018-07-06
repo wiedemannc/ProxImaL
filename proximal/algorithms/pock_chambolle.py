@@ -12,6 +12,10 @@ import numpy as np
 class PCUniformConvexGorF:
     """This class can be used to implement algorithm 2 of the Pock Chambolle
     paper for 1/N^2 convergence rate if either Psi or Omega is uniformly convex.
+
+    From the paper: in case G is uniform convex, there exists gamma such that
+    for any x in dom subgrad G
+        G(x') >= G(x) + <p, x'-x> + gamma/2*||x-x'||^2 for all p in subgrad G(x), x' in X
     """
     def __init__(self, gamma, tau0, L = None, try_fast_norm = False):
         self._lastIt = 0
@@ -172,6 +176,8 @@ def solve(psi_fns, omega_fns, tau=None, sigma=None, theta=None,
           lin_solver="cg", lin_solver_options=None, conv_check=100,
           try_diagonalize=True, try_fast_norm=False, scaled=True,
           metric=None, convlog=None, verbose=0, callback=None, adapter = NumpyAdapter(), ppd=False, cuda_code_file=None):
+    # psi_fns corresponds with F(Kx) from the paper
+    # omega_fns corresponds with G(x) from the paper
 
     # Can only have one omega function.
     assert len(omega_fns) <= 1
@@ -290,7 +296,7 @@ def solve(psi_fns, omega_fns, tau=None, sigma=None, theta=None,
                               "conv_check"])
 
     # Convergence log for initial iterate
-    if convlog is not None or conv_check > 0:
+    if convlog is not None or conv_check > 0 or callback is not None:
         K.update_vars(adapter.to_np(x))
         objval = []
         for f in prox_fns:
@@ -302,6 +308,8 @@ def solve(psi_fns, omega_fns, tau=None, sigma=None, theta=None,
         if convlog is not None:
             convlog.record_objective(sum(objval))
             convlog.record_timing(0.0)
+        #if callback is not None:
+        #    callback(adapter.to_np(x), 0)
 
     for i in range(max_iters):
         iter_timing["pc_iteration_tot"].tic()
@@ -461,7 +469,7 @@ def solve(psi_fns, omega_fns, tau=None, sigma=None, theta=None,
             if not callback is None or verbose == 2:
                 K.update_vars(adapter.to_np(x))
             if not callback is None:
-                callback(adapter.to_np(x))
+                callback(adapter.to_np(x), i)
 
             # Progress
             if verbose > 0:

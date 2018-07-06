@@ -29,7 +29,7 @@ def solve(psi_fns, omega_fns, rho=1.0,
           max_iters=1000, eps_abs=1e-3, eps_rel=1e-3, x0=None,
           lin_solver="cg", lin_solver_options=None,
           try_diagonalize=True, try_fast_norm=False,
-          scaled=True, conv_check=100,
+          scaled=True, conv_check=100, callback=None,
           metric=None, convlog=None, verbose=0):
     prox_fns = psi_fns + omega_fns
     stacked_ops = vstack([fn.lin_op for fn in psi_fns])
@@ -57,6 +57,9 @@ def solve(psi_fns, omega_fns, rho=1.0,
     # Initialize
     if x0 is not None:
         v[:] = np.reshape(x0, K.input_size)
+        K.forward(v, z)
+    else:
+        v[:] = K.x0()
         K.forward(v, z)
 
     # Buffers.
@@ -117,18 +120,25 @@ def solve(psi_fns, omega_fns, rho=1.0,
             objval = sum([fn.value for fn in prox_fns])
             convlog.record_objective(objval)
 
+        if (verbose == 2 or callback is not None) and i%conv_check == 0:
+            K.update_vars(v)
+
+        if callback is not None and i % conv_check == 0:
+            callback(v, i)
+
         # Show progess
         if verbose > 0 and i % conv_check == 0:
             # Evaluate objective only if required (expensive !)
             objstr = ''
             if verbose == 2:
-                K.update_vars(v)
                 objstr = ", obj_val = %02.03e" % sum([fn.value for fn in prox_fns])
 
             # Evaluate metric potentially
             metstr = '' if metric is None else ", {}".format(metric.message(v))
             print("iter %d: ||r||_2 = %.3f, eps_pri = %.3f, ||s||_2 = %.3f, eps_dual = %.3f%s%s" % (
                 i, np.linalg.norm(r), eps_pri, np.linalg.norm(s), eps_dual, objstr, metstr))
+
+
 
         iter_timing.toc()
         # Exit if converged.

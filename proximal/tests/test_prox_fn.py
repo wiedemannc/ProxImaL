@@ -1,6 +1,6 @@
 from proximal.tests.base_test import BaseTest
 from proximal.prox_fns import (norm1, sum_squares, sum_entries, nonneg, weighted_norm1,
-                               weighted_nonneg, diff_fn)
+                               weighted_nonneg, diff_fn, sum_of_sep_diff_fn)
 from proximal.lin_ops import Variable
 from proximal.halide.halide import Halide, halide_installed
 from proximal.utils.utils import im2nparray, tic, toc
@@ -47,6 +47,51 @@ class TestProxFn(BaseTest):
         prob.solve()
 
         self.assertItemsAlmostEqual(x, x_var.value, places=3)
+
+    def test_sum_of_sep_diff_fn(self):
+        func = lambda x, idx: np.sum(x**2, axis=-1)
+        grad = lambda x, idx: 2*x
+        def hessian(x, idx):
+            n = x.shape[1]
+            res = np.zeros((x.shape[0], n, n))
+            for i in range(n):
+                res[:,i,i] = 2
+            return res
+
+        dim = (5,2)
+        tmp = Variable(dim)
+        fn = sum_of_sep_diff_fn(tmp, func, grad, hessian)
+        rho = 1
+        v = np.reshape(np.arange(dim[0]*dim[1]), dim) * 1.0
+        x = fn.prox(rho, v.copy())
+        self.assertItemsAlmostEqual(x, v * rho / (2 + rho))
+
+        rho = 2
+        x = fn.prox(rho, v.copy())
+        self.assertItemsAlmostEqual(x, v * rho / (2 + rho))
+
+        # With modifiers.
+        mod_fn = sum_of_sep_diff_fn(tmp, func, grad, hessian,
+                                    alpha=2, beta=-1,
+                                    c=np.ones(dim) * 1.0,
+                                    b=np.ones(dim) * 1.0, gamma=1)
+
+        rho = 2
+        v = np.reshape(np.arange(dim[0]*dim[1]), dim) * 1.0
+        x = mod_fn.prox(rho, v.copy())
+
+        # vhat = mod_fn.beta*(v - mod_fn.c/rho)*rho/(rho+2*mod_fn.gamma) - mod_fn.b
+        # rho_hat = rho/(mod_fn.alpha*np.sqrt(np.abs(mod_fn.beta)))
+        # xhat = fn.prox(rho_hat, vhat)
+        flatdim = dim[0]*dim[1]
+        x_var = cvx.Variable(flatdim)
+        cost = 2 * cvx.sum_squares(-x_var - np.ones(flatdim)) + \
+            np.ones(flatdim).T * x_var + cvx.sum_squares(x_var) + \
+            (rho / 2) * cvx.sum_squares(x_var - v.flatten())
+        prob = cvx.Problem(cvx.Minimize(cost))
+        prob.solve()
+
+        self.assertItemsAlmostEqual(x.flatten(), x_var.value, places=3)
 
     def test_norm1(self):
         """Test L1 norm prox fn.

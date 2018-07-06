@@ -7,4 +7,5 @@ from .group_norm1 import group_norm1, weighted_group_norm1
 from .poisson_norm import poisson_norm, weighted_poisson_norm
 from .patch_NLM import patch_NLM
 from .sum_entries import sum_entries, zero_prox
+from .sum_of_sep_diff_fn import sum_of_sep_diff_fn
 # from .matlab_external import matlab_external
