@@ -91,7 +91,7 @@ class Problem(object):
         """
         self.lin_solver = lin_solver
 
-    def solve(self, solver=None, test_adjoints = False, test_norm = False, show_graph = False, *args, **kwargs):
+    def solve(self, solver=None, test_adjoints = False, test_norm = False, show_graph = False, dumpProxFns=False, *args, **kwargs):
         if solver is None:
             solver = self.solver
 
@@ -169,6 +169,8 @@ class Problem(object):
                     omega_fns[idx] = fn.copy(beta=fn.beta / np.sqrt(Knorm),
                                              implem=self.implem)
                 for v in K.orig_end.variables():
+                    #print("scale", repr(v))
+                    v.scaling = np.sqrt(Knorm)
                     if v.initval is not None:
                         v.initval *= np.sqrt(Knorm)
             if not test_adjoints in [False, None]:
@@ -211,6 +213,15 @@ class Problem(object):
 
             if self.implem == Impl['pycuda']:
                 kwargs['adapter'] = PyCudaAdapter()
+
+            if dumpProxFns:
+                print("PsiFns:")
+                for fn in psi_fns:
+                    fn.dump("  ")
+                print("OmegaFns:")
+                for fn in omega_fns:
+                    fn.dump("  ")
+
             opt_val = module.solve(psi_fns, omega_fns,
                                    lin_solver=self.lin_solver,
                                    try_diagonalize=self.try_diagonalize,
@@ -220,6 +231,8 @@ class Problem(object):
             # Unscale the variables.
             if self.scale:
                 for var in self.variables():
+                    #print("unscale", repr(var), "from", var.scaling)
+                    del var.scaling
                     var.value /= np.sqrt(Knorm)
             return opt_val
         else:
