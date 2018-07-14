@@ -47,6 +47,26 @@ class ProxFn(object):
         self._cgpu = None
         super(ProxFn, self).__init__()
 
+    def dump(self, indent=""):
+        matdump = lambda m: "[%s mean=%.4e std=%.4e]" % (" x ".join(["%d"% d for d in m.shape]), np.mean(m), np.std(m))
+        print("%sProxfn(%s):"%(indent,str(self)))
+        print("%s  Parametes:"%indent)
+        print("%s    alpha=%.4e beta=%.4e gamma=%.4e d=%.4e" % (
+               indent, self.alpha, self.beta, self.gamma, self.d))
+        print("%s    b=%s c=%s "% (
+               indent, matdump(self.b), matdump(self.c)))
+        print("%s  Arguments:" % indent)
+        for a in self.get_data():
+            if np.isscalar(a):
+                v = "%.4e" % a
+            elif type(a) is np.ndarray:
+                v = matdump(a)
+            else:
+                v = str(a)
+            print("%s    %a" % (indent, v))
+        print("%s  Linear Operator:" % indent)
+        self.lin_op.dump(indent + "    ")
+
     def set_implementation(self, im):
         if im in Impl.values():
             self.implementation = im

@@ -37,6 +37,15 @@ class LinOp(object):
             shape = (shape,)
         return tuple(shape)
 
+    def dump(self, indent = "", idx=0):
+        in_names = []
+        for i in self.input_nodes:
+            name, idx = i.dump(indent + "  ", idx)
+            in_names.append(name)
+        res_name = "v%d" % idx
+        print("%s%s = %s(%s)" % (indent, res_name, str(self), ",".join(in_names)))
+        return res_name, idx + 1
+
     def variables(self):
         """Return the list of variables used in the LinOp.
         """
