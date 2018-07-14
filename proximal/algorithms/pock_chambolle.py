@@ -396,7 +396,7 @@ def solve(psi_fns, omega_fns, tau=None, sigma=None, theta=None,
             xtmp = adapter.reshape(x[omega_slc], fn.lin_op.shape)
             prox_log[fn].tic()
             if ppd:
-                one_div_ctau = adapter.scalar(1.0) / ctau[omega_slc]
+                one_div_ctau = adapter.reshape(adapter.scalar(1.0) / ctau[omega_slc], fn.lin_op.shape)
             else:
                 one_div_ctau = adapter.scalar(1.0) / ctau
             x[omega_slc] = adapter.flatten( prox(fn, one_div_ctau, xtmp, x_init=prev_x,
