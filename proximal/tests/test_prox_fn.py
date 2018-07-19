@@ -1,6 +1,6 @@
 from proximal.tests.base_test import BaseTest
 from proximal.prox_fns import (norm1, sum_squares, sum_entries, nonneg, weighted_norm1,
-                               weighted_nonneg, diff_fn, sum_of_sep_diff_fn)
+                               weighted_nonneg, diff_fn, sum_of_sep_diff_fn, schatten)
 from proximal.lin_ops import Variable
 from proximal.halide.halide import Halide, halide_installed
 from proximal.utils.utils import im2nparray, tic, toc
@@ -304,6 +304,61 @@ class TestProxFn(BaseTest):
         x = fn.prox(1.0, v.copy())
         self.assertItemsAlmostEqual(x, v - 1)
 
+    def test_schatten(self):
+
+        for p in [1,2,np.inf]:
+
+            if p == 1:
+                cvx_prox_inner = cvx.normNuc
+            elif p == 2:
+                cvx_prox_inner = lambda x: cvx.pnorm(x.flatten(), p=2)
+            elif np.isinf(p):
+                cvx_prox_inner = cvx.sigma_max
+
+            # 2 norm
+            for rho in [1, 0.1, 10]:
+                # a single matrix
+                tmp = Variable((2,2))
+                v = np.reshape(np.arange(tmp.size), tmp.shape).astype(np.float) - tmp.size/2
+                fn = schatten(tmp, p)
+                res = fn.prox(rho, v.copy())
+
+                ctmp = cvx.Variable((2,2))
+                prob = (1/rho)*cvx_prox_inner(ctmp) + 0.5*cvx.sum_squares(ctmp - v)
+                cvx.Problem(cvx.Minimize(prob)).solve()
+
+                resval1 = (1/rho)*fn.eval(res) + 0.5*np.sum((res - v)**2)
+                resval2 = (1/rho)*fn.eval(ctmp.value) + 0.5*np.sum((ctmp.value - v)**2)
+
+                print("p", p, "rho %5.1f"%rho, "merrit(proximal) %.3e"%resval1, "merrit(cvx) %.3e"%resval2, "cvxprob.value %.3e"% prob.value)
+                self.assertItemsAlmostEqual(ctmp.value, res)
+
+                # a vector of matrices
+                tmp = Variable((5, 3, 2))
+                v = np.reshape(np.arange(tmp.size), tmp.shape).astype(np.float) - tmp.size/2
+                fn = schatten(tmp, p)
+                res = fn.prox(rho, v.copy())
+
+                ctmp = [cvx.Variable(tmp.shape[1:]) for i in range(tmp.shape[0])]
+                prob = (1/rho)*(cvx_prox_inner(ctmp[0]) +
+                                cvx_prox_inner(ctmp[1]) +
+                                cvx_prox_inner(ctmp[2]) +
+                                cvx_prox_inner(ctmp[3]) +
+                                cvx_prox_inner(ctmp[4])) + 0.5*(cvx.sum_squares(ctmp[0] - v[0,...]) +
+                                                                cvx.sum_squares(ctmp[1] - v[1,...]) +
+                                                                cvx.sum_squares(ctmp[2] - v[2,...]) +
+                                                                cvx.sum_squares(ctmp[3] - v[3,...]) +
+                                                                cvx.sum_squares(ctmp[4] - v[4,...]) )
+                cvx.Problem(cvx.Minimize(prob)).solve()
+
+                ctmpval = np.array([ctmp[i].value for i in range(v.shape[0])])
+                resval1 = (1/rho)*fn.eval(res) + 0.5*np.sum((res - v)**2)
+                resval2 = (1/rho)*fn.eval(ctmpval) + 0.5*np.sum((ctmpval - v)**2)
+
+                print("p", p, "rho %5.1f"%rho, "merrit(proximal) %.3e"%resval1, "merrit(cvx) %.3e"%resval2, "cvxprob.value %.3e"% prob.value)
+                self.assertItemsAlmostEqual(ctmpval, res, places=2)
+
+
     def test_overloading(self):
         """Test operator overloading.
         """
@@ -332,3 +387,7 @@ class TestProxFn(BaseTest):
         arr = arr + fn2
         self.assertEqual(type(arr), list)
         self.assertEqual(len(arr), 3)
+
+if __name__ == "__main__":
+    TestProxFn().test_schatten()
+
