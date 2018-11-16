@@ -38,9 +38,9 @@ class warp(LinOp):
         self.tmpfwd = np.zeros((shape[0], shape[1],
                                 shape[2] if (len(shape) > 2) else 1,
                                 H.shape[2] if (len(H.shape) > 2) else 1),
-                               dtype=np.float32, order='FORTRAN')
+                               dtype=np.float32, order='F')
         self.tmpadj = np.zeros((shape[0], shape[1], shape[2] if (
-            len(shape) > 2) else 1), dtype=np.float32, order='FORTRAN')
+            len(shape) > 2) else 1), dtype=np.float32, order='F')
 
         # Halide homographies
         if len(H.shape) == 2:

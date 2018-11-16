@@ -27,11 +27,11 @@ class grad(LinOp):
         if len(arg.shape) in [2, 3] and self.dims == 2:
             self.tmpfwd = np.zeros((arg.shape[0], arg.shape[1],
                                     arg.shape[2] if (len(arg.shape) > 2) else 1, 2),
-                                   dtype=np.float32, order='FORTRAN')
+                                   dtype=np.float32, order='F')
 
             self.tmpadj = np.zeros((arg.shape[0], arg.shape[1],
                                     arg.shape[2] if (len(arg.shape) > 2) else 1),
-                                   dtype=np.float32, order='FORTRAN')
+                                   dtype=np.float32, order='F')
 
         super(grad, self).__init__([arg], shape, implem)
 

@@ -2,7 +2,7 @@ from .prox_fn import ProxFn
 import numpy as np
 import scipy.optimize as opt
 
-def newton_solve_seperable(x0, f, grad_f, hessian_f, newtonIts=5, maxLineSearchIts=10, lineSearchAlpha=0.1, lineSearchBeta=0.5, assertSanity=True):
+def newton_solve_seperable(x0, f, grad_f, hessian_f, newtonIts=5, maxLineSearchIts=10, lineSearchAlpha=0.1, lineSearchBeta=0.5, eps=1e-10, assertSanity=True):
     x = x0
     f0 = None
     for nit in range(newtonIts):
@@ -19,10 +19,14 @@ def newton_solve_seperable(x0, f, grad_f, hessian_f, newtonIts=5, maxLineSearchI
                 R[:,i] = np.sum(A[:,i,:]*b, axis=-1)
             return R
         hinv = np.linalg.inv( hessian_f(x, ls_non_conv) )
-        dx = -elemdot(hinv, gfx)
+        dx = elemdot(hinv, gfx)
+        lmbsqr = np.sum(dx * gfx, axis=-1)
+        dx = -dx
+
         fx = f(x, ls_non_conv)
         if assertSanity and f0 is None: f0 = fx
         # calculate t by backtracking line search
+        ls_non_conv[lmbsqr <= 2*eps] = False
         t = np.ones(x.shape[0])
         for lit in range(maxLineSearchIts):
             xtest = x[ls_non_conv] + t[ls_non_conv,np.newaxis]*dx[ls_non_conv,:]
@@ -34,9 +38,10 @@ def newton_solve_seperable(x0, f, grad_f, hessian_f, newtonIts=5, maxLineSearchI
                 break
             t[ls_non_conv] *= lineSearchBeta
         x = x + t[:,np.newaxis]*dx
-    if assertSanity: 
+    if assertSanity:
         idx = np.ones(x.shape[0], np.bool)
-        assert np.all(f(x, idx) <= f0)
+        assert np.max(f(x, idx)-f0) < 1e-8
+        #assert np.all(f(x, idx) <= f0)
         grad_f(x, idx)
         hessian_f(x, idx)
     return x

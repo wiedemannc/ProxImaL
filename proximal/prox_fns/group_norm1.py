@@ -24,7 +24,7 @@ class group_norm1(ProxFn):
            self.group_dims == [len(lin_op.shape) - 1]:
             self.tmpout = np.zeros((lin_op.shape[0], lin_op.shape[1],
                                     lin_op.shape[2] if (len(lin_op.shape) > 3) else 1, 2),
-                                   dtype=np.float32, order='FORTRAN')
+                                   dtype=np.float32, order='F')
 
         super(group_norm1, self).__init__(lin_op, **kwargs)
 
